@@ -26,6 +26,15 @@ verifying citations, choosing a review tier, capping an agent — is a script wi
 | 8 | 41% of output was thinking; Opus on everything | **Effort/model per role** — `roles.*` in config; agent frontmatter `model`/`effort`/`maxTurns`; `dev.escalate_paths` names where Opus is worth it. | `config.py` defaults + `/pm-loop-tune`. | Tune per repo with `.pm-loop.toml`; measure with `pm ledger`. |
 | 9 | (owner) local LLM on the lab, not the desktop | **llama.cpp server on Nomad** — `deploy/nomad/llm.ts` (HouseJob, node-3, CPU, Qwen2.5-7B Q4). Prose only. | Home-lab PR adds `.infra/llm.ts`; CI/CD deploys. | `llm.endpoint` in config; `pm llm "…"` to check. |
 
+## Lanes are processes, not turns
+
+A headless tick ends when the PM stops, and any Agent it spawned dies with it (seen on the first trial: a lane cut off mid-work).
+So in headless mode the PM dispatches `pm lane dev|fix|reviewer <repo> <n>`: a detached `claude -p` under a transient systemd
+unit with the role's model, effort, `--max-turns` and `--max-budget-usd`, the agent definition as system prompt, and the brief on stdin.
+When it exits, the wrapper records the ledger line and appends a `lane_done` event, so the next tick sees the result.
+Interactively (`/pm-loop`) the same briefs go to foreground Agent calls. First live lane: `pm lane fix diarch 548` — $3.18,
+16 minutes, fixes pushed to the PR's own branch as the bot, reply posted, six tests added.
+
 ## Data flow
 
 ```
