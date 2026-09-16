@@ -29,9 +29,10 @@ def check(repo: str, number: int, cfg: dict, checkout: str | None = None) -> dic
     row("role line in body", bool(ROLE_RE.search(body)), "")
     bad_kw = [m.group(0) for m in CLOSING_RE.finditer(body) if not m.group(0).startswith(cfg["merge"]["closing_keywords_only_in"])]
     row("closing keywords only as 'Closes #N'", not bad_kw, "; ".join(bad_kw[:5]))
-    msgs = "\n".join(c.get("messageHeadline", "") + "\n" + c.get("messageBody", "") for c in pr.get("commits", []))
+    # A squash merge writes its own message (pm merge composes it), so branch commits only matter for merge/rebase.
+    msgs = "" if cfg["merge"]["method"] == "squash" else "\n".join(c.get("messageHeadline", "") + "\n" + c.get("messageBody", "") for c in pr.get("commits", []))
     trailers = [t for t in cfg["merge"]["forbid_trailers"] if t.lower() in (msgs + "\n" + body).lower()]
-    row("no forbidden trailers/footers", not trailers, ", ".join(trailers))
+    row("no forbidden trailers/footers in PR body" + ("" if cfg["merge"]["method"] == "squash" else "/commits"), not trailers, ", ".join(trailers))
     secrets = re.findall(r"\$\{\{\s*(?:secrets|vars)\.([A-Z0-9_]+)\s*\}\}", body)
     row("secrets/vars referenced exist", True, "declared in body: " + ", ".join(sorted(set(secrets))) if secrets else "none referenced")
     ok = all(r["ok"] for r in rows)
