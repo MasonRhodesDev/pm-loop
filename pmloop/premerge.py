@@ -1,7 +1,7 @@
 """The pre-merge checklist as a script: every rule the PM used to re-derive by hand, as pass/fail rows."""
 from __future__ import annotations
 import re, subprocess, json
-from . import gh, events
+from . import gh, events, classify
 
 CLOSING_RE = re.compile(r"\b(close[sd]?|fix(e[sd])?|resolve[sd]?)\b\s*:?\s*#(\d+)", re.I)
 ROLE_RE = re.compile(r"^\*\*role:\*\*\s*\S+.*\*\*model:\*\*.*\*\*effort:\*\*", re.M)
@@ -16,8 +16,12 @@ def check(repo: str, number: int, cfg: dict, checkout: str | None = None) -> dic
     remote = gh.run(["api", f"repos/{repo}/git/ref/heads/{pr['headRefName']}", "--jq", ".object.sha"]).strip()
     row("head equals remote branch tip", remote == tip, f"pr={tip[:7]} remote={remote[:7]}")
     v = events.latest_verdict(repo, number); req = cfg["review"]["required_verdict"]
-    row(f"reviewer {req} at tip", v is not None and v["verdict"] == req and tip.startswith(v["tip"]),
-        f"{v['verdict']}@{v['tip'][:7]} {v['url']}" if v else "no verdict")
+    tier = classify.for_pr(repo, number, cfg)
+    if tier["tier"] == "none" and not (v and v["verdict"] == "BLOCKED" and tip.startswith(v["tip"])):
+        row("review not required (tier none)", True, tier["reason"])
+    else:
+        row(f"reviewer {req} at tip", v is not None and v["verdict"] == req and tip.startswith(v["tip"]),
+            f"{v['verdict']}@{v['tip'][:7]} {v['url']}" if v else "no verdict")
     st, bad = gh.checks_state(repo, tip, cfg["merge"].get("required_check", ""))
     row("checks green", st == "success", st + (": " + ", ".join(bad) if bad else ""))
     row("mergeable", pr.get("mergeStateStatus") in ("CLEAN", "HAS_HOOKS", "UNSTABLE", ""), pr.get("mergeStateStatus", ""))
