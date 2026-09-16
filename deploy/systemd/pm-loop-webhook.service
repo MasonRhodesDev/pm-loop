@@ -1,0 +1,10 @@
+[Unit]
+Description=pm-loop webhook receiver (desktop; or run deploy/nomad/webhook.ts on the lab and sync the queue)
+[Service]
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=PM_LOOP_CONFIG=%h/.config/pm-loop/config.toml
+EnvironmentFile=%h/.config/pm-loop/webhook.env
+ExecStart=%h/repos/pm-loop/bin/pm events serve --port 8787
+Restart=on-failure
+[Install]
+WantedBy=default.target

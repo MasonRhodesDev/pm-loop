@@ -1,0 +1,8 @@
+[Unit]
+Description=pm-loop poll/tick cadence (webhooks make this the fallback)
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=2min
+RandomizedDelaySec=20
+[Install]
+WantedBy=timers.target

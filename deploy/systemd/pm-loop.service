@@ -1,0 +1,8 @@
+[Unit]
+Description=pm-loop: poll GitHub, then run one headless PM tick if the queue is non-empty
+[Service]
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+Type=oneshot
+Environment=PM_LOOP_CONFIG=%h/.config/pm-loop/config.toml
+ExecStart=%h/repos/pm-loop/bin/pm events poll
+ExecStart=%h/repos/pm-loop/bin/pm run --checkout MasonRhodesDev/diarch=%h/repos/diarch

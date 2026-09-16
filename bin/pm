@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# pm: the pm-loop CLI (see `pm --help`). Works from the plugin dir or an installed checkout.
+here="$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)"
+exec env PYTHONPATH="$here${PYTHONPATH:+:$PYTHONPATH}" python3 -m pmloop.cli "$@"

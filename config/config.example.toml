@@ -1,0 +1,64 @@
+# ~/.config/pm-loop/config.toml — user-level knobs. Repo-level overrides go in <repo>/.pm-loop.toml.
+repos = ["MasonRhodesDev/diarch", "MasonRhodesDev/home-lab", "MasonRhodesDev/pulumi-home-lab", "MasonRhodesDev/pulumi-modules"]
+state_dir = "~/.local/state/pm-loop"
+
+[bot]                       # the GitHub App every write goes through
+app_id = 4890751
+installation_id = 160445920
+key_path = "~/.config/loop-bots/mason-agent.pem"
+slug = "mason-agent"
+
+[poll]
+interval_s = 120            # systemd timer cadence; a webhook receiver makes this a fallback
+
+[watch]
+timeout_s = 2400            # one bounded wait per CI run (self-hosted pool: 116–367 s queue + run time)
+
+[roles.pm]
+model = "sonnet"
+effort = "medium"
+max_turns = 40
+max_tool_calls = 60
+
+[roles.dev]
+model = "sonnet"
+effort = "high"
+max_turns = 200
+max_tool_calls = 400
+escalate_model = "opus"
+escalate_paths = ["engine/**", "router/**", "store/**", "auth/**"]
+
+[roles.review_light]
+model = "sonnet"
+effort = "low"
+max_turns = 40
+max_tool_calls = 60
+
+[roles.review_adversarial]
+model = "opus"
+effort = "high"
+max_turns = 120
+max_tool_calls = 200
+
+[review]
+required_verdict = "CLEAR"
+adversarial_paths = ["engine/**", "router/**", "store/**", "auth/**", "server/**"]
+[review.tier_by_class]
+docs = "none"
+ci = "light"
+tests = "light"
+code = "light"
+
+[merge]
+method = "squash"
+required_check = "ci"       # the gate job; empty = every check-run must be green
+base = "main"
+
+[status]
+prose = true
+max_prose_words = 60
+
+[llm]                       # home-lab llama.cpp server (see deploy/nomad/llm.ts); empty endpoint = template prose
+endpoint = "http://192.168.1.3:8080"   # node-3, host networking (deploy/nomad/llm.ts)
+model = "qwen2.5-7b-instruct-q4_k_m"
+timeout_s = 60

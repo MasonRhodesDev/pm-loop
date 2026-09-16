@@ -1,0 +1,8 @@
+{
+  "name": "mason-tools",
+  "owner": {"name": "Mason Rhodes"},
+  "description": "Private plugins from MasonRhodesDev",
+  "plugins": [
+    {"name": "pm-loop", "source": "./", "description": "Event-driven PM loop with scripted merges, STATUS and reviews"}
+  ]
+}
