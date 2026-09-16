@@ -36,6 +36,7 @@ def check(repo: str, number: int, cfg: dict, checkout: str | None = None) -> dic
 def merge(repo: str, number: int, cfg: dict, role: str, model: str, effort: str, subject: str | None = None, body: str = "", dry: bool = False) -> dict:
     """Checklist, then squash-merge as the App with the role line. Refuses on any failed row."""
     rep = check(repo, number, cfg)
+    dry = dry or bool(cfg["merge"].get("dry_run"))
     if not rep["ok"]:
         return {"merged": False, "report": rep}
     msg = gh.role_line(role, model, effort) + ("\n\n" + body.strip() if body.strip() else "")

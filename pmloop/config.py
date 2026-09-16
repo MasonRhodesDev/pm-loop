@@ -39,6 +39,7 @@ DEFAULTS: dict = {
         "forbid_trailers": ["Co-Authored-By:", "Claude-Session:", "Generated with"],
         "closing_keywords_only_in": "Closes #",   # bodies may close issues only with this exact form
         "queue": True,                            # sequence merges through the merge queue file
+        "dry_run": False,                         # true = `pm merge` only reports what it would merge (first live runs)
     },
     "status": {
         "file": "STATUS.md", "prose": True, "max_prose_words": 60,

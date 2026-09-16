@@ -60,6 +60,7 @@ def pm(cfg: dict, board_md: str, status_tail: str, extra: str = "") -> str:  # e
 ## Doctrine
 - Merge only when `pm premerge` reports ok (reviewer {cfg['review']['required_verdict']} at tip AND checks green). Never merge on your own judgment. Use `pm merge`.
 - Never poll or wait. If nothing is actionable, say so and stop; the next tick comes from events.
+{"- MERGES ARE IN DRY-RUN MODE this tick: `pm merge` only reports the payload; list what would have merged." if cfg["merge"].get("dry_run") else ""}
 - Reviews: `pm classify <repo> <pr>` decides the tier; `pm brief reviewer <repo> <pr>` builds the brief; spawn a FRESH reviewer agent (`reviewer-light` / `reviewer-adversarial`) — never resume one.
 - Dev work: `pm brief dev <repo> <issue>`; spawn a `dev-lane` agent. A BLOCKED verdict goes back to a dev lane with the verdict URL.
 - After a merge: `pm status-entry <repo> <pr>` writes the STATUS entry; `pm factcheck` verifies it; open the STATUS PR with the MCP tool (label: no-review) — no STATUS lane, no fact-check lane.
