@@ -30,6 +30,21 @@ Do not merge. Do not review yourself. Report: PR URL, tip SHA, tests run, anythi
 {j}
 """
 
+def fix(repo: str, number: int, cfg: dict) -> str:
+    """A BLOCKED PR goes back to a dev lane that pushes to the PR's own branch — never a new PR."""
+    role = cfg["roles"]["dev"]; v = events.latest_verdict(repo, number)
+    pr = gh.pr_view(repo, number, "title,headRefName,headRefOid,url,body")
+    return f"""You are a dev lane fixing {repo} PR #{number} — {pr['title']}. role: dev (#{number}) · model: {role['model']} · effort: {role['effort']} · max tool calls: {role['max_tool_calls']}.
+
+{RULES}
+## Task
+The reviewer posted {v['verdict'] if v else 'a verdict'} at `{(v or {}).get('tip', pr['headRefOid'])[:7]}`: {(v or {}).get('url', '(see PR)')}.
+Check out branch `{pr['headRefName']}`, address EVERY finding in that verdict (a finding you disagree with gets a reply with evidence, not silence),
+push fix commits to the SAME branch as the bot, and reply on the PR with the MCP `comment` tool: one line per finding — fixed at `<sha>` or disputed with the reason.
+Do NOT open a new PR. Do not merge. Report: new tip SHA, findings fixed/disputed, tests run.
+PR: {pr['url']}
+"""
+
 def reviewer(repo: str, number: int, cfg: dict, tier: str | None = None, checkout: str | None = None) -> str:
     t = tier or classify.for_pr(repo, number, cfg)["tier"]
     rk = "review_adversarial" if t == "adversarial" else "review_light"; role = cfg["roles"][rk]
@@ -53,7 +68,7 @@ Post exactly one verdict with the MCP `review` tool: verdict CLEAR or BLOCKED, t
 Files: {len(pr['files'])}. PR: {pr['url']}
 """
 
-def pm(cfg: dict, board_md: str, status_tail: str, extra: str = "") -> str:  # extra: appended after the doctrine
+def pm(cfg: dict, board_md: str, status_tail: str, extra: str = "", headless: bool = False) -> str:  # extra: appended after the doctrine
     role = cfg["roles"]["pm"]
     return f"""You are the PM for one tick of the loop. role: pm · model: {role['model']} · effort: {role['effort']}. You have NO memory of previous ticks; everything you need is below. Decide, act with the `pm` scripts and MCP tools, and stop. Max tool calls: {role['max_tool_calls']}.
 
@@ -62,7 +77,8 @@ def pm(cfg: dict, board_md: str, status_tail: str, extra: str = "") -> str:  # e
 - Never poll or wait. If nothing is actionable, say so and stop; the next tick comes from events.
 {"- MERGES ARE IN DRY-RUN MODE this tick: `pm merge` only reports the payload; list what would have merged." if cfg["merge"].get("dry_run") else ""}
 - Reviews: `pm classify <repo> <pr>` decides the tier; `pm brief reviewer <repo> <pr>` builds the brief; spawn a FRESH reviewer agent (`reviewer-light` / `reviewer-adversarial`) — never resume one.
-- Dev work: `pm brief dev <repo> <issue>`; spawn a `dev-lane` agent. A BLOCKED verdict goes back to a dev lane with the verdict URL.
+- Dev work: `pm brief dev <repo> <issue>`; a BLOCKED PR: `pm brief fix <repo> <pr>` (fixes land on the PR's own branch, never a new PR).
+- Dispatch: {"HEADLESS TICK — spawn every lane/reviewer with `pm lane <dev|fix|reviewer> <repo> <n>` (a detached process with its own budget; it reports back as a queue event). Do NOT use the Agent tool: this tick ends when you stop, and an Agent would die with it." if headless else "spawn lanes/reviewers with the Agent tool (agents `pm-loop:dev-lane`, `pm-loop:reviewer-light`, `pm-loop:reviewer-adversarial`) using the brief as the prompt; they run in the foreground, so wait for each report before deciding the next step."}
 - After a merge: `pm status-entry <repo> <pr>` writes the STATUS entry; `pm factcheck` verifies it; open the STATUS PR with the MCP tool (label: no-review) — no STATUS lane, no fact-check lane.
 - Owner decisions: never decide; label `{cfg['labels']['needs_owner']}` with a short numbered CTA ("Reply with a number").
 - Everything stays private. No attribution trailers. No polling. No sub-agents of sub-agents.

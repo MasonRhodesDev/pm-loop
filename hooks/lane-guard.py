@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Inside any subagent: no nested agents, no background Bash, no CI polling loops."""
-import re, sys
+import re, sys, os
 from _common import read, deny, in_subagent, cfg, pm_role
 h = read(); c = cfg(h)["lanes"]; tool = h.get("tool_name"); inp = h.get("tool_input") or {}
 # Applies to pm-loop's own lanes; every other subagent only if lanes.guard_all_subagents = true
-if in_subagent(h) and (pm_role(h) or c.get("guard_all_subagents")):
+if (in_subagent(h) or os.environ.get("PM_LOOP_AGENT_TYPE")) and (pm_role(h) or c.get("guard_all_subagents")):
     if tool == "Agent" and c.get("deny_subagents", True):
         deny("lane rule: lanes never spawn sub-agents (a fork redoes the task and opens duplicate PRs). Report the need in your final message.")
     if tool == "Bash":

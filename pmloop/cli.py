@@ -1,7 +1,7 @@
 """`pm` — every procedural piece of the loop as a subcommand. JSON out by default so agents and scripts can parse it."""
 from __future__ import annotations
 import argparse, json, os, sys, shlex
-from . import config, events, queue, classify, review, premerge, status, factcheck, watch, board, brief, run, ledger, llm, gh
+from . import config, events, queue, classify, review, premerge, status, factcheck, watch, board, brief, run, ledger, llm, gh, lane
 
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="pm", description=__doc__)
@@ -17,7 +17,8 @@ def main(argv=None):
     s = sub.add_parser("status-entry", help="STATUS.md entry from facts"); s.add_argument("repo"); s.add_argument("pr", type=int); s.add_argument("--json", action="store_true")
     s = sub.add_parser("factcheck", help="verify every #N / sha / run id / quote in a file"); s.add_argument("repo"); s.add_argument("file"); s.add_argument("--quotes-from", action="append", default=[])
     s = sub.add_parser("watch", help="bounded wait for CI (one process, one event)"); s.add_argument("what", choices=["pr", "run"]); s.add_argument("repo"); s.add_argument("id", type=int); s.add_argument("--timeout", type=int)
-    s = sub.add_parser("brief", help="brief for a fresh agent"); s.add_argument("role", choices=["dev", "reviewer", "pm"]); s.add_argument("repo", nargs="?"); s.add_argument("number", nargs="?", type=int); s.add_argument("--tier")
+    s = sub.add_parser("brief", help="brief for a fresh agent"); s.add_argument("role", choices=["dev", "fix", "reviewer", "pm"]); s.add_argument("repo", nargs="?"); s.add_argument("number", nargs="?", type=int); s.add_argument("--tier")
+    s = sub.add_parser("lane", help="start a detached headless lane (own process, own budget) or list lanes"); s.add_argument("kind", choices=["dev", "fix", "reviewer", "spike", "list"]); s.add_argument("repo", nargs="?"); s.add_argument("number", nargs="?", type=int); s.add_argument("--tier"); s.add_argument("--extra", default="")
     s = sub.add_parser("run", help="one headless PM tick if the queue is non-empty"); s.add_argument("--dry", action="store_true", help="print the command and brief only"); s.add_argument("--plan-only", action="store_true", help="real claude -p, read-only tools, no actions"); s.add_argument("--force", action="store_true"); s.add_argument("--checkout", action="append", default=[], help="owner/repo=/path")
     s = sub.add_parser("ledger", help="cost summary from the ledger"); s.add_argument("--since", default="")
     s = sub.add_parser("llm", help="local model check / one-off prompt"); s.add_argument("text", nargs="?")
@@ -47,12 +48,15 @@ def main(argv=None):
         r = watch.pr(a.repo, a.id, cfg, a.timeout) if a.what == "pr" else watch.run(a.repo, a.id, cfg, a.timeout); out(r); sys.exit(0 if r["result"] == "success" else 1)
     elif a.cmd == "brief":
         if a.role == "dev": print(brief.dev(a.repo, a.number, cfg))
+        elif a.role == "fix": print(brief.fix(a.repo, a.number, cfg))
         elif a.role == "reviewer": print(brief.reviewer(a.repo, a.number, cfg, a.tier, a.repo_dir))
         else: b = board.build(cfg); print(brief.pm(cfg, board.render(b), ""))
     elif a.cmd == "run":
         co = dict(x.split("=", 1) for x in a.checkout); r = run.tick(cfg, co, a.dry, a.force, a.plan_only)
         if a.dry and r.get("dry"): print(r["cmd"]); print("---"); print(r["prompt"])
         else: out(r)
+    elif a.cmd == "lane":
+        out(lane.status(cfg) if a.kind == "list" else lane.start(a.kind, a.repo, a.number, cfg, a.repo_dir, a.tier, a.extra))
     elif a.cmd == "ledger": out(ledger.summary(cfg, a.since))
     elif a.cmd == "llm":
         out({"healthy": llm.healthy(cfg), "reply": llm.complete(cfg, "Answer briefly.", a.text) if a.text else None})

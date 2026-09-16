@@ -17,7 +17,7 @@ def tick(cfg: dict, checkout_dirs: dict[str, str] | None = None, dry: bool = Fal
     extra = ""
     if plan_only:
         extra = "\n## PLAN-ONLY TICK\nDo not spawn agents, merge, post, or write anything. Using only the read commands you are allowed, list what you WOULD do per PR (one line each) and stop.\n"
-    prompt = brief.pm(cfg, md, tail or "(no checkout given; use `gh` to read STATUS if needed)", extra)
+    prompt = brief.pm(cfg, md, tail or "(no checkout given; use `gh` to read STATUS if needed)", extra, headless=True)
     role = cfg["roles"]["pm"]; plugin_root = os.environ.get("CLAUDE_PLUGIN_ROOT") or str(Path(__file__).resolve().parents[1])
     tools = cfg["claude"]["plan_only_tools"] if plan_only else cfg["claude"]["allowed_tools"]
     cmd = [cfg["claude"]["bin"], "-p", "--model", role["model"], "--effort", role["effort"], "--max-turns", str(role["max_turns"]),

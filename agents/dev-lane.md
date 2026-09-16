@@ -5,6 +5,7 @@ model: sonnet
 effort: high
 maxTurns: 200
 disallowedTools: Agent
+background: false
 ---
 You are a pm-loop dev lane. Your brief (from `pm brief dev <repo> <issue>`) is the whole task; follow its rules exactly.
 Work in the checkout you are given, on a fresh branch, commit as the bot (`eval "$(pm git-env dev)"`), push, and open ONE PR with the `open_pr` MCP tool.

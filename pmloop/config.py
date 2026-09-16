@@ -16,11 +16,11 @@ DEFAULTS: dict = {
     "watch": {"timeout_s": 2400, "fail_fast": True},
     "roles": {                        # model/effort/turn caps per role; the role line carries model+effort
         "pm":         {"model": "sonnet", "effort": "medium", "max_turns": 40, "max_tool_calls": 60, "max_budget_usd": 2.0},
-        "dev":        {"model": "sonnet", "effort": "high",   "max_turns": 200, "max_tool_calls": 400,
+        "dev":        {"model": "sonnet", "effort": "high",   "max_turns": 200, "max_tool_calls": 400, "max_budget_usd": 4.0,
                        "escalate_model": "opus", "escalate_paths": []},
-        "review_light":       {"model": "sonnet", "effort": "low",  "max_turns": 40,  "max_tool_calls": 60},
-        "review_adversarial": {"model": "opus",   "effort": "high", "max_turns": 120, "max_tool_calls": 200},
-        "spike":      {"model": "sonnet", "effort": "high", "max_turns": 150, "max_tool_calls": 300},
+        "review_light":       {"model": "sonnet", "effort": "low",  "max_turns": 40,  "max_tool_calls": 60,  "max_budget_usd": 1.0},
+        "review_adversarial": {"model": "opus",   "effort": "high", "max_turns": 120, "max_tool_calls": 200, "max_budget_usd": 5.0},
+        "spike":      {"model": "sonnet", "effort": "high", "max_turns": 150, "max_tool_calls": 300, "max_budget_usd": 3.0},
     },
     "review": {
         "required_verdict": "CLEAR",
@@ -52,6 +52,7 @@ DEFAULTS: dict = {
     "lanes": {"deny_subagents": True, "deny_background": True, "guard_all_subagents": False},
     "claude": {"bin": "claude", "extra_args": [],
                "allowed_tools": ["Bash(pm *)", "Bash(gh pr *)", "Bash(gh issue *)", "Bash(gh run *)", "Bash(gh api *)", "Bash(git *)", "Agent", "mcp__plugin_pm-loop_gh-bot__*"],
+               "lane_tools": ["Bash", "Read", "Edit", "Write", "Glob", "Grep", "WebFetch", "mcp__plugin_pm-loop_gh-bot__*", "mcp__mason-agent__*"],
                "plan_only_tools": ["Bash(pm board*)", "Bash(pm classify*)", "Bash(pm review-needed*)", "Bash(pm premerge*)", "Bash(pm events pending*)", "Bash(pm ledger*)", "Bash(gh pr view*)", "Bash(gh issue view*)"]},
 }
 

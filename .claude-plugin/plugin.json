@@ -1,8 +1,17 @@
 {
   "name": "pm-loop",
   "version": "0.1.0",
-  "description": "Event-driven, script-first PM loop for GitHub repos worked by Claude Code lanes: poller/webhook → queue → one small headless PM tick; scripted pre-merge/merge, STATUS entries, fact-checks, review routing; fresh capped agents; local LLM for prose only.",
-  "author": {"name": "Mason Rhodes"},
-  "keywords": ["pm", "github", "workflow", "agents", "cost"],
-  "license": "UNLICENSED"
+  "description": "Event-driven, script-first PM loop for GitHub repos worked by Claude Code lanes: poller/webhook \u2192 queue \u2192 one small headless PM tick; scripted pre-merge/merge, STATUS entries, fact-checks, review routing; fresh capped agents; local LLM for prose only.",
+  "author": {
+    "name": "Mason Rhodes"
+  },
+  "keywords": [
+    "pm",
+    "github",
+    "workflow",
+    "agents",
+    "cost"
+  ],
+  "license": "UNLICENSED",
+  "hooks": "./hooks/hooks.json"
 }
