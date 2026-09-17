@@ -1,0 +1,5 @@
+# pm-loop's own repo, dogfooding pm-loop.
+[merge]
+required_check = "ci"
+[status]
+file = "STATUS.md"
