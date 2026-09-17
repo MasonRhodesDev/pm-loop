@@ -40,6 +40,8 @@ DEFAULTS: dict = {
         "closing_keywords_only_in": "Closes #",   # bodies may close issues only with this exact form
         "queue": True,                            # sequence merges through the merge queue file
         "dry_run": False,                         # true = `pm merge` only reports what it would merge (first live runs)
+        "mergeable_poll_attempts": 5,             # mergeStateStatus UNKNOWN: re-fetch this many times before deciding
+        "mergeable_poll_delay_s": 3,              # seconds between mergeable polls (GitHub recomputes within seconds)
     },
     "status": {
         "file": "STATUS.md", "prose": True, "max_prose_words": 60,
