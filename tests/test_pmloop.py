@@ -1,7 +1,8 @@
 import json, os, tempfile, unittest, sys
 from pathlib import Path
+from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from pmloop import config, classify, events, queue, premerge, factcheck, status
+from pmloop import config, classify, events, queue, premerge, factcheck, status, ledger
 
 class T(unittest.TestCase):
     def setUp(self):
@@ -58,6 +59,73 @@ class T(unittest.TestCase):
     def test_factcheck_quotes_only(self):
         r = factcheck.check('he said "exactly these words here"', "o/r", self.cfg, ["... exactly these words here ..."])
         self.assertTrue(r["ok"]); r = factcheck.check('"not in the sources at all"', "o/r", self.cfg, ["x"]); self.assertFalse(r["ok"])
+
+    def _base_pr(self, tip):
+        return {"number": 42, "title": "T", "body": "**role:** dev · **model:** sonnet · **effort:** high",
+                "headRefOid": tip, "headRefName": "b", "baseRefName": "main", "state": "OPEN", "isDraft": False,
+                "commits": [], "labels": []}
+
+    def test_premerge_mergeable_unknown_polls_then_passes(self):
+        """mergeStateStatus UNKNOWN (base just moved) is retried, not taken as a hard fail."""
+        tip = "a" * 40
+        calls = {"n": 0}
+        def fake_pr_view(repo, number, fields=""):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                d = dict(self._base_pr(tip)); d["mergeStateStatus"] = "UNKNOWN"; return d
+            return {"mergeStateStatus": "UNKNOWN" if calls["n"] < 3 else "CLEAN"}
+        self.cfg["merge"]["mergeable_poll_attempts"] = 5; self.cfg["merge"]["mergeable_poll_delay_s"] = 0
+        with patch("pmloop.gh.pr_view", side_effect=fake_pr_view), \
+             patch("pmloop.gh.run", return_value=tip + "\n"), \
+             patch("pmloop.classify.for_pr", return_value={"tier": "none", "reason": "t"}), \
+             patch("pmloop.events.latest_verdict", return_value=None), \
+             patch("pmloop.gh.checks_state", return_value=("success", [])):
+            rep = premerge.check("o/r", 42, self.cfg)
+        mrow = next(r for r in rep["rows"] if r["check"] == "mergeable")
+        self.assertTrue(mrow["ok"], mrow); self.assertIn("CLEAN", mrow["detail"])
+        self.assertTrue(rep["ok"], rep["rows"])
+        self.assertEqual(calls["n"], 3)   # 1 initial view + 2 polls before it resolved
+
+    def test_premerge_mergeable_unknown_gives_up_after_bounded_retries(self):
+        """Still UNKNOWN after the bound: decide (fail), don't retry forever and don't wave it through."""
+        tip = "b" * 40
+        calls = {"n": 0}
+        base = self._base_pr(tip); base["mergeStateStatus"] = "UNKNOWN"
+        def fake_pr_view(repo, number, fields=""):
+            calls["n"] += 1
+            return dict(base) if calls["n"] == 1 else {"mergeStateStatus": "UNKNOWN"}
+        self.cfg["merge"]["mergeable_poll_attempts"] = 3; self.cfg["merge"]["mergeable_poll_delay_s"] = 0
+        with patch("pmloop.gh.pr_view", side_effect=fake_pr_view), \
+             patch("pmloop.gh.run", return_value=tip + "\n"), \
+             patch("pmloop.classify.for_pr", return_value={"tier": "none", "reason": "t"}), \
+             patch("pmloop.events.latest_verdict", return_value=None), \
+             patch("pmloop.gh.checks_state", return_value=("success", [])):
+            rep = premerge.check("o/r", 42, self.cfg)
+        mrow = next(r for r in rep["rows"] if r["check"] == "mergeable")
+        self.assertFalse(mrow["ok"]); self.assertIn("UNKNOWN", mrow["detail"])
+        self.assertFalse(rep["ok"])
+        self.assertEqual(calls["n"], 3)   # 1 initial + (attempts - 1) = 2 polls, then it stops
+
+    def test_merge_refuses_without_force_when_premerge_not_ok(self):
+        fail_rep = {"repo": "o/r", "number": 7, "tip": "c" * 40, "title": "T", "ok": False,
+                    "rows": [{"check": "checks green", "ok": False, "detail": "pending"}]}
+        with patch("pmloop.premerge.check", return_value=fail_rep), patch("pmloop.gh.api") as api:
+            r = premerge.merge("o/r", 7, self.cfg, "pm", "sonnet", "medium")
+        self.assertFalse(r["merged"]); api.assert_not_called()
+
+    def test_merge_force_premerge_ok_overrides_and_logs_ledger(self):
+        """--force-premerge-ok is a human override: it proceeds despite a failing row, and it is logged."""
+        fail_rep = {"repo": "o/r", "number": 7, "tip": "c" * 40, "title": "T", "ok": False,
+                    "rows": [{"check": "checks green", "ok": False, "detail": "pending"}]}
+        with patch("pmloop.premerge.check", return_value=fail_rep), \
+             patch("pmloop.gh.app_token", return_value="tok"), \
+             patch("pmloop.gh.api", return_value={"merged": True, "sha": "c" * 40}) as api:
+            r = premerge.merge("o/r", 7, self.cfg, "pm", "sonnet", "medium", force=True)
+        self.assertTrue(r["merged"]); self.assertTrue(r["forced"]); api.assert_called_once()
+        lines = (Path(self.cfg["state_dir"]) / "ledger.jsonl").read_text().splitlines()
+        self.assertEqual(len(lines), 1)
+        entry = json.loads(lines[0])
+        self.assertIn("force-premerge-ok", entry["note"]); self.assertIn("checks green", entry["note"])
 
 if __name__ == "__main__":
     unittest.main()

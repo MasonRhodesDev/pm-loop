@@ -13,7 +13,7 @@ def main(argv=None):
     s = sub.add_parser("classify", help="review tier for a PR"); s.add_argument("repo"); s.add_argument("pr", type=int)
     s = sub.add_parser("review-needed", help="does the PR need a (re-)review?"); s.add_argument("repo"); s.add_argument("pr", type=int)
     s = sub.add_parser("premerge", help="pre-merge checklist"); s.add_argument("repo"); s.add_argument("pr", type=int)
-    s = sub.add_parser("merge", help="checklist then squash-merge as the app"); s.add_argument("repo"); s.add_argument("pr", type=int); s.add_argument("--subject"); s.add_argument("--body", default=""); s.add_argument("--model", default=None); s.add_argument("--effort", default=None); s.add_argument("--dry", action="store_true", help="checklist + the exact merge payload, no PUT")
+    s = sub.add_parser("merge", help="checklist then squash-merge as the app"); s.add_argument("repo"); s.add_argument("pr", type=int); s.add_argument("--subject"); s.add_argument("--body", default=""); s.add_argument("--model", default=None); s.add_argument("--effort", default=None); s.add_argument("--dry", action="store_true", help="checklist + the exact merge payload, no PUT"); s.add_argument("--force-premerge-ok", action="store_true", dest="force_premerge_ok", help="human override: merge despite a failing premerge row; logged to the ledger")
     s = sub.add_parser("status-entry", help="STATUS.md entry from facts"); s.add_argument("repo"); s.add_argument("pr", type=int); s.add_argument("--json", action="store_true")
     s = sub.add_parser("factcheck", help="verify every #N / sha / run id / quote in a file"); s.add_argument("repo"); s.add_argument("file"); s.add_argument("--quotes-from", action="append", default=[])
     s = sub.add_parser("watch", help="bounded wait for CI (one process, one event)"); s.add_argument("what", choices=["pr", "run"]); s.add_argument("repo"); s.add_argument("id", type=int); s.add_argument("--timeout", type=int)
@@ -39,7 +39,7 @@ def main(argv=None):
     elif a.cmd == "premerge":
         r = premerge.check(a.repo, a.pr, cfg, a.repo_dir); out(r); sys.exit(0 if r["ok"] else 1)
     elif a.cmd == "merge":
-        role = cfg["roles"]["pm"]; r = premerge.merge(a.repo, a.pr, cfg, "pm", a.model or role["model"], a.effort or role["effort"], a.subject, a.body, dry=a.dry); out(r); sys.exit(0 if (r["merged"] or a.dry) else 1)
+        role = cfg["roles"]["pm"]; r = premerge.merge(a.repo, a.pr, cfg, "pm", a.model or role["model"], a.effort or role["effort"], a.subject, a.body, dry=a.dry, force=a.force_premerge_ok); out(r); sys.exit(0 if (r["merged"] or a.dry) else 1)
     elif a.cmd == "status-entry":
         print(json.dumps(status.facts(a.repo, a.pr, a.repo_dir), indent=1) if a.json else status.entry(a.repo, a.pr, cfg, a.repo_dir))
     elif a.cmd == "factcheck":

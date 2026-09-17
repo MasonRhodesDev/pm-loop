@@ -1,10 +1,23 @@
 """The pre-merge checklist as a script: every rule the PM used to re-derive by hand, as pass/fail rows."""
 from __future__ import annotations
-import re, subprocess, json
-from . import gh, events, classify
+import re, subprocess, json, time
+from . import gh, events, classify, ledger
 
 CLOSING_RE = re.compile(r"\b(close[sd]?|fix(e[sd])?|resolve[sd]?)\b\s*:?\s*#(\d+)", re.I)
 ROLE_RE = re.compile(r"^\*\*role:\*\*\s*\S+.*\*\*model:\*\*.*\*\*effort:\*\*", re.M)
+MERGEABLE_OK = ("CLEAN", "HAS_HOOKS", "UNSTABLE", "")
+
+def _mergeable(repo: str, number: int, cfg: dict, status: str) -> tuple[str, int]:
+    """GitHub reports UNKNOWN right after the base moves and recomputes within seconds. Re-fetch a bounded
+    number of times (never a hard fail, never treated as a pass) before deciding."""
+    attempts = max(1, int(cfg["merge"].get("mergeable_poll_attempts", 5)))
+    delay = float(cfg["merge"].get("mergeable_poll_delay_s", 3))
+    polls = 0
+    while status == "UNKNOWN" and polls < attempts - 1:
+        time.sleep(delay)
+        status = gh.pr_view(repo, number, "mergeStateStatus").get("mergeStateStatus", "")
+        polls += 1
+    return status, polls
 
 def check(repo: str, number: int, cfg: dict, checkout: str | None = None) -> dict:
     pr = gh.pr_view(repo, number, "number,title,body,headRefOid,headRefName,baseRefName,state,isDraft,mergeStateStatus,commits,labels")
@@ -24,7 +37,8 @@ def check(repo: str, number: int, cfg: dict, checkout: str | None = None) -> dic
             f"{v['verdict']}@{v['tip'][:7]} {v['url']}" if v else "no verdict")
     st, bad = gh.checks_state(repo, tip, cfg["merge"].get("required_check", ""))
     row("checks green", st == "success", st + (": " + ", ".join(bad) if bad else ""))
-    row("mergeable", pr.get("mergeStateStatus") in ("CLEAN", "HAS_HOOKS", "UNSTABLE", ""), pr.get("mergeStateStatus", ""))
+    mstatus, polls = _mergeable(repo, number, cfg, pr.get("mergeStateStatus", ""))
+    row("mergeable", mstatus in MERGEABLE_OK, mstatus + (f" (after {polls} poll{'s' if polls != 1 else ''})" if polls else ""))
     body = pr.get("body") or ""
     row("role line in body", bool(ROLE_RE.search(body)), "")
     bad_kw = [m.group(0) for m in CLOSING_RE.finditer(body) if not m.group(0).startswith(cfg["merge"]["closing_keywords_only_in"])]
@@ -38,15 +52,21 @@ def check(repo: str, number: int, cfg: dict, checkout: str | None = None) -> dic
     ok = all(r["ok"] for r in rows)
     return {"repo": repo, "number": number, "tip": tip, "title": pr["title"], "ok": ok, "rows": rows}
 
-def merge(repo: str, number: int, cfg: dict, role: str, model: str, effort: str, subject: str | None = None, body: str = "", dry: bool = False) -> dict:
-    """Checklist, then squash-merge as the App with the role line. Refuses on any failed row."""
+def merge(repo: str, number: int, cfg: dict, role: str, model: str, effort: str, subject: str | None = None, body: str = "", dry: bool = False, force: bool = False) -> dict:
+    """Runs the premerge checklist itself and refuses (no PUT) unless it reports ok — a caller (PM script or
+    human) cannot skip the gate by only checking a stale `pm premerge` run. `force=True` overrides a failing
+    checklist for a human decision only; every override is logged to the ledger."""
     rep = check(repo, number, cfg)
     dry = dry or bool(cfg["merge"].get("dry_run"))
-    if not rep["ok"]:
+    if not rep["ok"] and not force:
         return {"merged": False, "report": rep}
+    forced = force and not rep["ok"]
+    if forced:
+        failing = "; ".join(r["check"] for r in rep["rows"] if not r["ok"])
+        ledger.record(cfg, role, model, {}, None, note=f"--force-premerge-ok on {repo}#{number} at {rep['tip'][:7]}: failing rows: {failing}")
     msg = gh.role_line(role, model, effort) + ("\n\n" + body.strip() if body.strip() else "")
     payload = {"merge_method": cfg["merge"]["method"], "commit_title": subject or f"{rep['title']} (#{number})", "commit_message": msg, "sha": rep["tip"]}
     if dry:
-        return {"merged": False, "dry": True, "would_put": f"repos/{repo}/pulls/{number}/merge", "payload": payload, "report": rep}
+        return {"merged": False, "dry": True, "would_put": f"repos/{repo}/pulls/{number}/merge", "payload": payload, "report": rep, "forced": forced}
     j = gh.api(f"repos/{repo}/pulls/{number}/merge", method="PUT", token=gh.app_token(cfg), fields=payload)
-    return {"merged": bool(j.get("merged")), "sha": j.get("sha"), "report": rep}
+    return {"merged": bool(j.get("merged")), "sha": j.get("sha"), "report": rep, "forced": forced}
