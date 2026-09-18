@@ -263,5 +263,160 @@ class PathResolutionTest(unittest.TestCase):
         self.assertEqual(calls["n"], 2)  # first read failed transiently, retry healed it
 
 
+class BodyFileTest(unittest.TestCase):
+    """Issue #10 suggestion 1: comment/open_issue/open_pr accept body_file as an alternative
+    to body, read server-side, so a long/generated body never has to pass through a tool
+    argument (and a caller's `$(cat ...)` meant for shell expansion never gets posted
+    literally, since there's now a real way to hand over a file)."""
+
+    def setUp(self):
+        self.server = _load_server()
+
+    def _fake_client(self):
+        fake_response = MagicMock()
+        fake_response.raise_for_status.return_value = None
+        fake_response.json.return_value = {
+            "html_url": "https://example/1", "id": 1, "number": 1, "head": {"sha": "abc123"},
+        }
+        fake_client = MagicMock()
+        fake_client.__enter__.return_value = fake_client
+        fake_client.__exit__.return_value = False
+        fake_client.post.return_value = fake_response
+        fake_client.patch.return_value = fake_response
+        return fake_client
+
+    def test_comment_body_file_is_read_and_posted(self):
+        tmp = tempfile.mkdtemp()
+        body_path = Path(tmp, "body.md")
+        body_path.write_text("hello from file")
+        fake_client = self._fake_client()
+        with patch.object(self.server, "_client", return_value=fake_client):
+            self.server.comment(repo="o/r", number=1, role="dev", model="m", effort="low", body_file=str(body_path))
+        _, kwargs = fake_client.post.call_args
+        self.assertIn("hello from file", kwargs["json"]["body"])
+
+    def test_comment_requires_exactly_one_of_body_or_body_file(self):
+        """Neither given, or both given, must error clearly before any request is made."""
+        fake_client = self._fake_client()
+        with patch.object(self.server, "_client", return_value=fake_client):
+            with self.assertRaises(ValueError):
+                self.server.comment(repo="o/r", number=1, role="dev", model="m", effort="low")
+            with self.assertRaises(ValueError):
+                self.server.comment(repo="o/r", number=1, role="dev", model="m", effort="low", body="x", body_file="y")
+        fake_client.post.assert_not_called()
+
+    def test_open_issue_body_file_missing_path_errors_with_path_named(self):
+        missing = str(Path(tempfile.mkdtemp(), "does-not-exist.md"))
+        fake_client = self._fake_client()
+        with patch.object(self.server, "_client", return_value=fake_client):
+            with self.assertRaises(ValueError) as ctx:
+                self.server.open_issue(repo="o/r", role="dev", model="m", effort="low", title="t", body_file=missing)
+        self.assertIn(missing, str(ctx.exception))
+        fake_client.post.assert_not_called()
+
+    def test_open_pr_body_file_unreadable_path_errors(self):
+        """A directory can't be read as a file (IsADirectoryError) — must surface as a clear
+        ValueError, not an uncaught OSError, and must not post."""
+        dir_path = tempfile.mkdtemp()
+        fake_client = self._fake_client()
+        with patch.object(self.server, "_client", return_value=fake_client):
+            with self.assertRaises(ValueError):
+                self.server.open_pr(repo="o/r", role="dev", model="m", effort="low", head="h", title="t", body_file=dir_path)
+        fake_client.post.assert_not_called()
+
+    def test_open_pr_inline_body_still_works(self):
+        fake_client = self._fake_client()
+        with patch.object(self.server, "_client", return_value=fake_client):
+            self.server.open_pr(repo="o/r", role="dev", model="m", effort="low", head="h", title="t", body="inline body")
+        _, kwargs = fake_client.post.call_args
+        self.assertIn("inline body", kwargs["json"]["body"])
+
+
+class EditToolsTest(unittest.TestCase):
+    """Issue #10 suggestion 2: edit_pr / edit_issue let a lane correct a record it already
+    posted (title/body/labels), with the same role-line handling as open_pr/open_issue."""
+
+    def setUp(self):
+        self.server = _load_server()
+
+    def _fake_client(self):
+        fake_response = MagicMock()
+        fake_response.raise_for_status.return_value = None
+        fake_response.json.return_value = {"html_url": "https://example/1", "number": 1, "head": {"sha": "abc123"}}
+        fake_client = MagicMock()
+        fake_client.__enter__.return_value = fake_client
+        fake_client.__exit__.return_value = False
+        fake_client.patch.return_value = fake_response
+        return fake_client
+
+    def test_edit_pr_updates_title_and_body_with_role_line(self):
+        fake_client = self._fake_client()
+        with patch.object(self.server, "_client", return_value=fake_client):
+            result = self.server.edit_pr(repo="o/r", number=1, role="dev", model="m", effort="low", title="new title", body="new body")
+        args, kwargs = fake_client.patch.call_args
+        self.assertEqual(args[0], "/repos/o/r/pulls/1")
+        self.assertEqual(kwargs["json"]["title"], "new title")
+        self.assertIn("new body", kwargs["json"]["body"])
+        self.assertIn("role:", kwargs["json"]["body"])
+        self.assertEqual(result["head_sha"], "abc123")
+
+    def test_edit_pr_title_only_does_not_touch_body(self):
+        fake_client = self._fake_client()
+        with patch.object(self.server, "_client", return_value=fake_client):
+            self.server.edit_pr(repo="o/r", number=1, role="dev", model="m", effort="low", title="new title")
+        _, kwargs = fake_client.patch.call_args
+        self.assertNotIn("body", kwargs["json"])
+
+    def test_edit_pr_body_file_is_read(self):
+        tmp = tempfile.mkdtemp()
+        body_path = Path(tmp, "body.md")
+        body_path.write_text("body from file")
+        fake_client = self._fake_client()
+        with patch.object(self.server, "_client", return_value=fake_client):
+            self.server.edit_pr(repo="o/r", number=1, role="dev", model="m", effort="low", body_file=str(body_path))
+        _, kwargs = fake_client.patch.call_args
+        self.assertIn("body from file", kwargs["json"]["body"])
+
+    def test_edit_pr_requires_at_least_one_field(self):
+        fake_client = self._fake_client()
+        with patch.object(self.server, "_client", return_value=fake_client):
+            with self.assertRaises(ValueError):
+                self.server.edit_pr(repo="o/r", number=1, role="dev", model="m", effort="low")
+        fake_client.patch.assert_not_called()
+
+    def test_edit_pr_rejects_both_body_and_body_file(self):
+        fake_client = self._fake_client()
+        with patch.object(self.server, "_client", return_value=fake_client):
+            with self.assertRaises(ValueError):
+                self.server.edit_pr(repo="o/r", number=1, role="dev", model="m", effort="low", body="x", body_file="y")
+        fake_client.patch.assert_not_called()
+
+    def test_edit_issue_updates_title_body_and_labels(self):
+        fake_client = self._fake_client()
+        with patch.object(self.server, "_client", return_value=fake_client):
+            self.server.edit_issue(repo="o/r", number=1, role="dev", model="m", effort="low", title="t2", body="b2", labels=["bug"])
+        args, kwargs = fake_client.patch.call_args
+        self.assertEqual(args[0], "/repos/o/r/issues/1")
+        self.assertEqual(kwargs["json"]["title"], "t2")
+        self.assertIn("b2", kwargs["json"]["body"])
+        self.assertEqual(kwargs["json"]["labels"], ["bug"])
+
+    def test_edit_issue_empty_labels_list_clears_labels_not_rejected(self):
+        """labels=[] means 'clear all labels', a legitimate edit — must not be treated as
+        'nothing to edit' just because the list is falsy."""
+        fake_client = self._fake_client()
+        with patch.object(self.server, "_client", return_value=fake_client):
+            self.server.edit_issue(repo="o/r", number=1, role="dev", model="m", effort="low", labels=[])
+        _, kwargs = fake_client.patch.call_args
+        self.assertEqual(kwargs["json"]["labels"], [])
+
+    def test_edit_issue_requires_at_least_one_field(self):
+        fake_client = self._fake_client()
+        with patch.object(self.server, "_client", return_value=fake_client):
+            with self.assertRaises(ValueError):
+                self.server.edit_issue(repo="o/r", number=1, role="dev", model="m", effort="low")
+        fake_client.patch.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()

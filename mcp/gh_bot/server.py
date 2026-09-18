@@ -155,6 +155,31 @@ def _split_repo(repo: str) -> tuple[str, str]:
     return owner, name
 
 
+def _resolve_body(body: str | None, body_file: str | None, *, required: bool) -> str | None:
+    """Resolve a tool's body text from exactly one of `body` (a literal string — MCP tool
+    arguments are NOT shell, so a caller's `$(cat ...)` or backticks meant for expansion are
+    never evaluated and would be posted verbatim) or `body_file` (a local path read
+    server-side, for long or generated bodies that should never pass through a tool
+    argument). Raises ValueError if both are given, if `required` and neither is given, or
+    if `body_file` can't be read — naming the resolved path so the caller isn't left with a
+    bare OSError. Returns None (never raises) when neither is given and `required` is False,
+    meaning "leave this field unchanged" for the edit_* tools.
+    """
+    if body is not None and body_file is not None:
+        raise ValueError("give exactly one of body or body_file, not both")
+    if body is None and body_file is None:
+        if required:
+            raise ValueError("give exactly one of body or body_file")
+        return None
+    if body_file is not None:
+        path = Path(os.path.expanduser(body_file)).absolute()
+        try:
+            return path.read_text()
+        except OSError as e:
+            raise ValueError(f"body_file {path} could not be read: {e}") from e
+    return body
+
+
 @mcp.tool()
 def whoami() -> dict:
     """Return the app identity this server posts as, and the repos it is installed on."""
@@ -171,11 +196,18 @@ def whoami() -> dict:
 
 
 @mcp.tool()
-def comment(repo: str, number: int, role: Role, model: str, effort: Effort, body: str) -> dict:
-    """Post a comment on an issue or PR as the app, with the role line prepended."""
+def comment(repo: str, number: int, role: Role, model: str, effort: Effort, body: str | None = None, body_file: str | None = None) -> dict:
+    """Post a comment on an issue or PR as the app, with the role line prepended.
+
+    Give exactly one of `body` (a literal string — this is an MCP tool argument, not a
+    shell: `$(cat ...)` or backticks meant for expansion are NOT evaluated and would be
+    posted verbatim) or `body_file` (a local filesystem path, read by this server process,
+    for long or generated bodies that should never have to pass through a tool argument).
+    """
     _split_repo(repo)
+    text = _resolve_body(body, body_file, required=True)
     with _client() as c:
-        r = c.post(f"/repos/{repo}/issues/{number}/comments", json={"body": _with_line(body, role, model, effort)})
+        r = c.post(f"/repos/{repo}/issues/{number}/comments", json={"body": _with_line(text, role, model, effort)})
         r.raise_for_status()
         j = r.json()
     return {"url": j["html_url"], "id": j["id"]}
@@ -192,9 +224,16 @@ def edit_comment(repo: str, comment_id: int, role: Role, model: str, effort: Eff
 
 
 @mcp.tool()
-def open_issue(repo: str, role: Role, model: str, effort: Effort, title: str, body: str, labels: list[str] | None = None) -> dict:
-    """Open an issue as the app, with the role line prepended to the body."""
-    payload = {"title": title, "body": _with_line(body, role, model, effort)}
+def open_issue(repo: str, role: Role, model: str, effort: Effort, title: str, body: str | None = None, body_file: str | None = None, labels: list[str] | None = None) -> dict:
+    """Open an issue as the app, with the role line prepended to the body.
+
+    Give exactly one of `body` (a literal string — this is an MCP tool argument, not a
+    shell: `$(cat ...)` or backticks meant for expansion are NOT evaluated and would be
+    posted verbatim) or `body_file` (a local filesystem path, read by this server process,
+    for long or generated bodies that should never have to pass through a tool argument).
+    """
+    text = _resolve_body(body, body_file, required=True)
+    payload = {"title": title, "body": _with_line(text, role, model, effort)}
     if labels:
         payload["labels"] = labels
     with _client() as c:
@@ -205,16 +244,80 @@ def open_issue(repo: str, role: Role, model: str, effort: Effort, title: str, bo
 
 
 @mcp.tool()
-def open_pr(repo: str, role: Role, model: str, effort: Effort, head: str, title: str, body: str, base: str = "main", draft: bool = False) -> dict:
-    """Open a pull request as the app, with the role line prepended to the body."""
+def open_pr(repo: str, role: Role, model: str, effort: Effort, head: str, title: str, body: str | None = None, body_file: str | None = None, base: str = "main", draft: bool = False) -> dict:
+    """Open a pull request as the app, with the role line prepended to the body.
+
+    Give exactly one of `body` (a literal string — this is an MCP tool argument, not a
+    shell: `$(cat ...)` or backticks meant for expansion are NOT evaluated and would be
+    posted verbatim) or `body_file` (a local filesystem path, read by this server process,
+    for long or generated bodies that should never have to pass through a tool argument).
+    """
+    text = _resolve_body(body, body_file, required=True)
     with _client() as c:
         r = c.post(
             f"/repos/{repo}/pulls",
-            json={"title": title, "head": head, "base": base, "body": _with_line(body, role, model, effort), "draft": draft},
+            json={"title": title, "head": head, "base": base, "body": _with_line(text, role, model, effort), "draft": draft},
         )
         r.raise_for_status()
         j = r.json()
     return {"url": j["html_url"], "number": j["number"], "head_sha": j["head"]["sha"]}
+
+
+@mcp.tool()
+def edit_pr(repo: str, number: int, role: Role, model: str, effort: Effort, title: str | None = None, body: str | None = None, body_file: str | None = None) -> dict:
+    """Edit an existing PR's title and/or body as the app, so a lane can correct a record it
+    already posted without a whole new PR or a forbidden plain `gh` write.
+
+    Give at least one of `title` or a body (via `body` or `body_file`); pass at most one of
+    `body`/`body_file` when changing the body (this is an MCP tool argument, not a shell:
+    `$(cat ...)` or backticks meant for expansion are NOT evaluated and would be posted
+    verbatim — use `body_file` for long or generated bodies instead). The body, when given,
+    *replaces* the whole PR description (like `edit_comment`) and gets the role line
+    re-prepended; a title-only edit leaves the existing body untouched.
+    """
+    new_body = _resolve_body(body, body_file, required=False)
+    if title is None and new_body is None:
+        raise ValueError("edit_pr: give at least one of title, or body/body_file")
+    payload: dict = {}
+    if title is not None:
+        payload["title"] = title
+    if new_body is not None:
+        payload["body"] = _with_line(new_body, role, model, effort)
+    with _client() as c:
+        r = c.patch(f"/repos/{repo}/pulls/{number}", json=payload)
+        r.raise_for_status()
+        j = r.json()
+    return {"url": j["html_url"], "number": j["number"], "head_sha": j["head"]["sha"]}
+
+
+@mcp.tool()
+def edit_issue(repo: str, number: int, role: Role, model: str, effort: Effort, title: str | None = None, body: str | None = None, body_file: str | None = None, labels: list[str] | None = None) -> dict:
+    """Edit an existing issue's title, body and/or labels as the app, so a lane can correct
+    a record it already posted without a forbidden plain `gh` write.
+
+    Give at least one of `title`, a body (via `body` or `body_file`), or `labels`; pass at
+    most one of `body`/`body_file` when changing the body (this is an MCP tool argument, not
+    a shell: `$(cat ...)` or backticks meant for expansion are NOT evaluated and would be
+    posted verbatim — use `body_file` for long or generated bodies instead). The body, when
+    given, *replaces* the whole issue description and gets the role line re-prepended;
+    `labels`, when given (including `[]`), *replaces* the whole label set. Fields left out
+    (None) are left unchanged.
+    """
+    new_body = _resolve_body(body, body_file, required=False)
+    if title is None and new_body is None and labels is None:
+        raise ValueError("edit_issue: give at least one of title, body/body_file, or labels")
+    payload: dict = {}
+    if title is not None:
+        payload["title"] = title
+    if new_body is not None:
+        payload["body"] = _with_line(new_body, role, model, effort)
+    if labels is not None:
+        payload["labels"] = labels
+    with _client() as c:
+        r = c.patch(f"/repos/{repo}/issues/{number}", json=payload)
+        r.raise_for_status()
+        j = r.json()
+    return {"url": j["html_url"], "number": j["number"]}
 
 
 @mcp.tool()
