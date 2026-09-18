@@ -20,12 +20,71 @@ import jwt
 from mcp.server.fastmcp import FastMCP
 
 import tomllib
-_CFG = tomllib.loads(Path(os.path.expanduser(os.environ.get("PM_LOOP_CONFIG", "~/.config/pm-loop/config.toml"))).read_text()).get("bot", {})
-APP_ID = int(_CFG["app_id"])
-INSTALLATION_ID = int(_CFG["installation_id"])
-KEY_PATH = Path(os.path.expanduser(_CFG["key_path"]))
-APP_SLUG = _CFG["slug"]
 API = "https://api.github.com"
+
+# Config, key and state paths are resolved fresh on every call below (never cached at
+# import), so a plugin-cache rebuild that moves them under a long-running server process
+# is picked up on the very next tool call instead of requiring a session restart.
+
+
+def _read_path_text(resolve_path, describe: str) -> str:
+    """Read the text at resolve_path(), re-resolving from scratch and retrying once on
+    OSError before giving up. resolve_path is called fresh on each attempt (it re-reads
+    env vars and, for derived paths, re-parses the config file), so a file that moved or
+    was briefly absent because a plugin cache was mid-rebuild heals on the retry without
+    needing a session restart. If both attempts fail, the error names the actual path
+    that was tried, instead of a bare `[Errno 2] No such file or directory`.
+    """
+    last_err: OSError | None = None
+    last_path = None
+    for _attempt in range(2):
+        try:
+            path = resolve_path()
+            last_path = path
+            return path.read_text()
+        except OSError as e:
+            last_err = e
+    if last_path is None:
+        # resolve_path() itself failed both times (e.g. the config file that a derived
+        # path depends on) — that error already names its own path, so don't wrap it.
+        raise last_err
+    raise OSError(f"gh-bot: {describe} not found at {last_path} ({last_err})") from last_err
+
+
+def _cfg() -> dict:
+    """Load the pm-loop config fresh from disk (never cached), so PM_LOOP_CONFIG or the
+    file it points at can change without restarting this process."""
+    def resolve() -> Path:
+        return Path(os.path.expanduser(os.environ.get("PM_LOOP_CONFIG", "~/.config/pm-loop/config.toml")))
+    text = _read_path_text(resolve, "pm-loop config")
+    return tomllib.loads(text).get("bot", {})
+
+
+def _app_id() -> int:
+    return int(_cfg()["app_id"])
+
+
+def _installation_id() -> int:
+    return int(_cfg()["installation_id"])
+
+
+def _key_path() -> Path:
+    return Path(os.path.expanduser(_cfg()["key_path"]))
+
+
+def _app_slug() -> str:
+    return _cfg()["slug"]
+
+
+def _read_key() -> str:
+    """Read the GitHub App private key, re-resolving its path (via a fresh config read)
+    on every call and retrying once on OSError before raising."""
+    return _read_path_text(_key_path, "GitHub App private key")
+
+
+def _state_dir() -> Path:
+    return Path(os.path.expanduser(os.environ.get("PM_LOOP_STATE_DIR", "~/.local/state/pm-loop")))
+
 
 Role = Literal["pm", "dev", "test", "architecture", "docs"]
 Effort = Literal["low", "medium", "high"]
@@ -49,12 +108,12 @@ def _installation_token() -> str:
         return _token["value"]
     now = int(time.time())
     assertion = jwt.encode(
-        {"iat": now - 60, "exp": now + 540, "iss": str(APP_ID)},
-        KEY_PATH.read_text(),
+        {"iat": now - 60, "exp": now + 540, "iss": str(_app_id())},
+        _read_key(),
         algorithm="RS256",
     )
     r = httpx.post(
-        f"{API}/app/installations/{INSTALLATION_ID}/access_tokens",
+        f"{API}/app/installations/{_installation_id()}/access_tokens",
         headers={"Authorization": f"Bearer {assertion}", "Accept": "application/vnd.github+json"},
         timeout=30,
     )
@@ -100,10 +159,11 @@ def whoami() -> dict:
     """Return the app identity this server posts as, and the repos it is installed on."""
     with _client() as c:
         repos = c.get("/installation/repositories").json().get("repositories", [])
+    slug = _app_slug()
     return {
-        "app": APP_SLUG,
-        "app_id": APP_ID,
-        "byline": f"{APP_SLUG}[bot]",
+        "app": slug,
+        "app_id": _app_id(),
+        "byline": f"{slug}[bot]",
         "repos": [r["full_name"] for r in repos],
         "roles": list(Role.__args__),
     }
@@ -209,7 +269,7 @@ def git_env(role: Role) -> dict:
     """Environment for git so commits are authored by the app and pushes authenticate as it.
     The token never appears in the result: git reads it through a 0700 credential-helper file."""
     _installation_token()
-    state = Path(os.path.expanduser(os.environ.get("PM_LOOP_STATE_DIR", "~/.local/state/pm-loop"))); state.mkdir(parents=True, exist_ok=True)
+    state = _state_dir(); state.mkdir(parents=True, exist_ok=True)
     cache = state / ".token-cache.json"; helper = state / "git-credential-gh-bot"
     fd = os.open(cache, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, "w") as fh:
@@ -218,8 +278,9 @@ def git_env(role: Role) -> dict:
     with os.fdopen(fd, "w") as fh:
         fh.write("#!/bin/sh\n[ \"$1\" = get ] || exit 0\necho username=x-access-token\n"
                  f"printf 'password=%s\\n' \"$(python3 -c 'import json;print(json.load(open(\"{cache}\"))[\"token\"])')\"\n")
-    name = f"{APP_SLUG}[bot] ({role})"
-    email = f"{APP_ID}+{APP_SLUG}[bot]@users.noreply.github.com"
+    slug = _app_slug()
+    name = f"{slug}[bot] ({role})"
+    email = f"{_app_id()}+{slug}[bot]@users.noreply.github.com"
     return {"GIT_AUTHOR_NAME": name, "GIT_AUTHOR_EMAIL": email, "GIT_COMMITTER_NAME": name, "GIT_COMMITTER_EMAIL": email,
             "GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "credential.helper", "GIT_CONFIG_VALUE_0": str(helper), "expires_in_s": int(_token["exp"] - time.time())}
 

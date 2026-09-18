@@ -24,6 +24,7 @@ Arguments: `$ARGUMENTS` (optional repos to restrict to; `--force` runs even with
 - `pm classify <repo> <pr>` → `pm brief reviewer <repo> <pr>` → spawn a **fresh** `reviewer-light` or `reviewer-adversarial` agent with that brief as its prompt. Never resume an old reviewer.
 - `pm brief dev <repo> <issue>` → spawn a `dev-lane` agent with the brief. One agent per issue.
 - After each merge: `pm record <repo> <pr>` — entry, factcheck, and a comment on the merged PR in one step; it refuses to post if factcheck fails. The record goes with the change; no STATUS PR is opened whose only change is a record.
+- If a gh-bot tool errors, use the equivalent `mason-agent` tool or `gh-agent` on the CLI instead — never fall back to plain `gh` for a write.
 - Owner decisions: open/label `needs-owner` with a numbered CTA. Then stop.
 - When nothing is actionable, say "nothing actionable" and stop. Do not wait, poll, or schedule.
 - Finish with `pm events clear` so processed events are not replayed.
