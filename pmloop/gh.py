@@ -44,6 +44,38 @@ def pr_view(repo: str, number: int, fields: str = "number,title,body,headRefOid,
 def check_runs(repo: str, sha: str) -> list[dict]:
     return api_list(f"repos/{repo}/commits/{sha}/check-runs?per_page=100", key="check_runs")
 
+def pr_files(repo: str, number: int) -> list[dict]:
+    """Files changed in the PR via the files API (paginated), so each entry carries a unified-diff
+    `patch` (GitHub omits it for binary/oversized files) alongside the filename."""
+    return api_list(f"repos/{repo}/pulls/{number}/files?per_page=100")
+
+def _names(path: str, key: str) -> set[str]:
+    return {i["name"] for i in api_list(path, key=key)}
+
+def configured_secrets_and_vars(repo: str) -> tuple[set[str], set[str], str]:
+    """Names of secrets/vars visible to this repo: repo-level (required -- a listing failure here is
+    surfaced, not swallowed, since silently treating it as empty would report every referenced secret
+    as 'missing'), plus org secrets/vars shared with this repo and every configured environment's
+    secrets/vars (both best-effort: the token may not be able to see them, and that alone isn't a
+    reason to fail the row). Listing secrets only ever returns names, never values -- that's all
+    existence-checking needs."""
+    try:
+        secrets = _names(f"repos/{repo}/actions/secrets?per_page=100", "secrets")
+        variables = _names(f"repos/{repo}/actions/variables?per_page=100", "variables")
+    except Exception as e:
+        return set(), set(), f"could not list repo secrets/vars: {e}"
+    def best_effort(path: str, key: str) -> set[str]:
+        try:
+            return _names(path, key)
+        except Exception:
+            return set()
+    secrets |= best_effort(f"repos/{repo}/actions/organization-secrets?per_page=100", "secrets")
+    variables |= best_effort(f"repos/{repo}/actions/organization-variables?per_page=100", "variables")
+    for env in best_effort(f"repos/{repo}/environments?per_page=100", "environments"):
+        secrets |= best_effort(f"repos/{repo}/environments/{env}/secrets?per_page=100", "secrets")
+        variables |= best_effort(f"repos/{repo}/environments/{env}/variables?per_page=100", "variables")
+    return secrets, variables, ""
+
 def checks_state(repo: str, sha: str, required: str = "") -> tuple[str, list[str]]:
     """('success'|'pending'|'failure', [bad runs]) — mirrors the merge tool's rule; `required` narrows to one check name."""
     runs = check_runs(repo, sha)
