@@ -3,6 +3,37 @@ from __future__ import annotations
 import argparse, json, os, sys, shlex, subprocess
 from . import config, events, queue, classify, review, premerge, status, factcheck, watch, board, brief, run, ledger, llm, gh, lane
 
+def _role_model_effort(cfg: dict, role_key: str, model_flag: str | None, effort_flag: str | None) -> tuple[str, str]:
+    """Model/effort for a role line (`pm merge`'s squash body, `pm record`'s comment): an explicit CLI
+    flag always wins; otherwise prefer a live signal for what's actually driving *this* invocation over
+    the static `cfg["roles"][role_key]` default, so a role line doesn't claim the config default when a
+    different model/effort is really running the tick. This mismatch can't happen when a tick is spawned
+    by `run.py`/`lane.py` -- they pass `--model`/`--effort` from this same cfg to the `claude -p` process
+    they then run `pm merge`/`pm record` inside, so cfg and the live session agree by construction -- but
+    it can when this CLI is invoked directly from an already-running interactive session (e.g. the
+    `pm-loop:pm-loop` skill) whose actual model/effort has nothing to do with pm-loop's config.
+
+    Effort: `CLAUDE_EFFORT` is a genuine Claude Code CLI env var -- present in the `claude` binary's own
+    string table, and `claude --help` describes `--effort` as "Effort level for the current session" --
+    set by the CLI itself, not by any pm-loop or user config file (confirmed absent from this machine's
+    settings.json/settings.local.json), so it's read here as a live signal of the *current* session.
+
+    Model: no equivalent bare `CLAUDE_MODEL`-style var exists in the CLI's own env var list.
+    `CLAUDE_CODE_SUBAGENT_MODEL` looks like a candidate but is a *static* user setting (this machine's
+    ~/.claude/settings.json declares `"env": {"CLAUDE_CODE_SUBAGENT_MODEL": "sonnet"}`, and that value is
+    absent from the top-level session's own process environment -- `/proc/<pid>/environ` -- so it isn't
+    even the launching process's own state, just a fixed value Claude Code hands to *subagent* spawns)
+    naming the model a session should hand to subagents it spawns, not the model running the current
+    session itself; using it here would silently swap one static default for another while looking
+    fixed. So model falls back straight to the config default -- a caller running a tick under a
+    non-default model must still pass `--model` explicitly, or set
+    `PM_LOOP__roles__<role>__model=<model>` (config.py's existing generic env-override mechanism, see
+    `load()`) before invoking this CLI."""
+    role = cfg["roles"][role_key]
+    model = model_flag or role["model"]
+    effort = effort_flag or os.environ.get("CLAUDE_EFFORT") or role["effort"]
+    return model, effort
+
 def _git_show_base(file: str, ref: str) -> str:
     """`file`'s content as of `ref`, for factcheck's `--base` diff (#2) -- run from the file's own
     directory with a `./`-relative pathspec so git resolves it without needing the file's full
@@ -60,12 +91,13 @@ def main(argv=None):
     elif a.cmd == "premerge":
         r = premerge.check(a.repo, a.pr, cfg, a.repo_dir); out(r); sys.exit(0 if r["ok"] else 1)
     elif a.cmd == "merge":
-        role = cfg["roles"]["pm"]; r = premerge.merge(a.repo, a.pr, cfg, "pm", a.model or role["model"], a.effort or role["effort"], a.subject, a.body, dry=a.dry, force=a.force_premerge_ok); out(r); sys.exit(0 if (r["merged"] or a.dry) else 1)
+        model, effort = _role_model_effort(cfg, "pm", a.model, a.effort)
+        r = premerge.merge(a.repo, a.pr, cfg, "pm", model, effort, a.subject, a.body, dry=a.dry, force=a.force_premerge_ok); out(r); sys.exit(0 if (r["merged"] or a.dry) else 1)
     elif a.cmd == "status-entry":
         print(json.dumps(status.facts(a.repo, a.pr, a.repo_dir), indent=1) if a.json else status.entry(a.repo, a.pr, cfg, a.repo_dir))
     elif a.cmd == "record":
-        role_cfg = cfg["roles"]["pm"]
-        r = status.record(a.repo, a.pr, cfg, a.repo_dir, a.role, a.model or role_cfg["model"], a.effort or role_cfg["effort"], dry=a.dry)
+        model, effort = _role_model_effort(cfg, "pm", a.model, a.effort)
+        r = status.record(a.repo, a.pr, cfg, a.repo_dir, a.role, model, effort, dry=a.dry)
         out(r); sys.exit(0 if r["ok"] else 1)
     elif a.cmd == "factcheck":
         srcs = [open(p).read() for p in a.quotes_from]

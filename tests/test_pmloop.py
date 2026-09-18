@@ -882,5 +882,29 @@ class T(unittest.TestCase):
             events.snapshot("o/r", self.cfg)
         cs.assert_called_once_with("o/r", "a"*40, "ci")
 
+    def test_role_model_effort_explicit_flags_win_over_everything(self):
+        with patch.dict(os.environ, {"CLAUDE_EFFORT": "xhigh"}):
+            model, effort = cli._role_model_effort(self.cfg, "pm", "opus", "low")
+        self.assertEqual((model, effort), ("opus", "low"))
+
+    def test_role_model_effort_env_effort_overrides_config_default(self):
+        with patch.dict(os.environ, {"CLAUDE_EFFORT": "xhigh"}):
+            model, effort = cli._role_model_effort(self.cfg, "pm", None, None)
+        self.assertEqual((model, effort), (self.cfg["roles"]["pm"]["model"], "xhigh"))
+
+    def test_role_model_effort_falls_back_to_config_when_no_flag_or_env(self):
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("CLAUDE_EFFORT", None)
+            model, effort = cli._role_model_effort(self.cfg, "pm", None, None)
+        self.assertEqual((model, effort), (self.cfg["roles"]["pm"]["model"], self.cfg["roles"]["pm"]["effort"]))
+
+    def test_role_model_effort_has_no_env_override_for_model(self):
+        """No reliable live signal for "the model actually running this session" was found (see
+        `_role_model_effort`'s docstring) -- CLAUDE_CODE_SUBAGENT_MODEL is a static subagent-spawn
+        setting, not the current session's own model, so it must NOT be read as a model override."""
+        with patch.dict(os.environ, {"CLAUDE_CODE_SUBAGENT_MODEL": "opus"}):
+            model, effort = cli._role_model_effort(self.cfg, "pm", None, None)
+        self.assertEqual(model, self.cfg["roles"]["pm"]["model"])
+
 if __name__ == "__main__":
     unittest.main()
