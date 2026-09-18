@@ -99,6 +99,28 @@ class T(unittest.TestCase):
         bad = [m.group(0) for m in premerge.CLOSING_RE.finditer("fixes #12 and Closes #13, resolve #500's") if not m.group(0).startswith("Closes #")]
         self.assertEqual(bad, ["fixes #12", "resolve #500"])
 
+    def test_closing_kw_midsentence_prose_not_flagged(self):
+        """Issue #21: a casual mid-sentence, non-canonical mention like 'merged 361d59d, closes #568'
+        inside a paragraph isn't functioning as an intended closing line and must not be flagged."""
+        body = "Fixed the bug. merged 361d59d, closes #568 in an earlier PR.\n\nCloses #21"
+        self.assertEqual(premerge._closing_kw_violations(body, "Closes #"), [])
+
+    def test_closing_kw_flagged_when_it_starts_its_own_line(self):
+        """A malformed closing keyword that IS its own line -- the shape a real (if badly-formed)
+        closing trailer takes -- is still a genuine violation of the 'Closes #N' doctrine."""
+        body = "See details below.\nfixes #12\nresolve #500"
+        self.assertEqual(premerge._closing_kw_violations(body, "Closes #"), ["fixes #12", "resolve #500"])
+
+    def test_closing_kw_flagged_when_indented_own_line(self):
+        """Leading whitespace before an own-line match must not exempt it -- same anchor rule
+        _forbidden_trailer_matches uses (strip, then check position)."""
+        body = "notes\n   Fixes #12"
+        self.assertEqual(premerge._closing_kw_violations(body, "Closes #"), ["Fixes #12"])
+
+    def test_closing_kw_canonical_form_never_flagged(self):
+        body = "Closes #21"
+        self.assertEqual(premerge._closing_kw_violations(body, "Closes #"), [])
+
     def test_webhook_signature(self):
         import hmac, hashlib
         body = json.dumps({"action": "opened", "repository": {"full_name": "o/r"}, "pull_request": {"number": 3, "head": {"sha": "e"*40}, "title": "x"}}).encode()
@@ -508,6 +530,36 @@ class T(unittest.TestCase):
     def test_trailer_bare_generated_with_footer_is_flagged(self):
         row = self._run_trailer_row(body="\n\nGenerated with [Claude Code](https://claude.com/claude-code)")
         self.assertFalse(row["ok"])
+
+    def _run_closing_row(self, body=""):
+        tip = "a" * 40
+        pr = self._base_pr(tip)
+        pr["body"] = pr["body"] + body
+        with patch("pmloop.gh.pr_view", return_value=pr), \
+             patch("pmloop.gh.run", return_value=tip + "\n"), \
+             patch("pmloop.classify.for_pr", return_value={"tier": "none", "reason": "t"}), \
+             patch("pmloop.events.latest_verdict", return_value=None), \
+             patch("pmloop.gh.pr_files", return_value=[]), \
+             patch("pmloop.gh.checks_state", return_value=("success", [])):
+            rep = premerge.check("o/r", 42, self.cfg)
+        return next(r for r in rep["rows"] if r["check"].startswith("closing keywords"))
+
+    def test_closing_row_midsentence_prose_mention_passes(self):
+        """Reproduces #21 end to end through premerge.check: a PR body narrating a past merge with a
+        casual lowercase 'closes #N' mid-sentence must not fail the row."""
+        body = "\n\nFixed by merging 361d59d, closes #568 in a prior PR.\n\nfor #21"
+        row = self._run_closing_row(body=body)
+        self.assertTrue(row["ok"], row)
+
+    def test_closing_row_malformed_own_line_still_fails(self):
+        """A malformed closing keyword written as its own line is still caught."""
+        row = self._run_closing_row(body="\n\nfixes #12\n\nfor #21")
+        self.assertFalse(row["ok"])
+        self.assertIn("fixes #12", row["detail"])
+
+    def test_closing_row_canonical_form_passes(self):
+        row = self._run_closing_row(body="\n\nCloses #21")
+        self.assertTrue(row["ok"], row)
 
     def test_merge_refuses_without_force_when_premerge_not_ok(self):
         fail_rep = {"repo": "o/r", "number": 7, "tip": "c" * 40, "title": "T", "ok": False,
