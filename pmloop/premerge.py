@@ -6,6 +6,11 @@ from . import gh, events, classify, ledger
 CLOSING_RE = re.compile(r"\b(close[sd]?|fix(e[sd])?|resolve[sd]?)\b\s*:?\s*#(\d+)", re.I)
 ROLE_RE = re.compile(r"^\*\*role:\*\*\s*\S+.*\*\*model:\*\*.*\*\*effort:\*\*", re.M)
 MERGEABLE_OK = ("CLEAN", "HAS_HOOKS", "UNSTABLE", "")
+# Negative lookbehind keeps a dotted prefix from sneaking a match in (`foo.vars.X`, `myvars.X`) and,
+# together with requiring the literal `secrets.`/`vars.` prefix, means `github.*` context refs
+# (`github.token`, `github.repository`, ...) never match at all -- they aren't secrets/vars.
+SECVAR_RE = re.compile(r"(?<![\w.])(secrets|vars)\.([A-Za-z0-9_]+)")
+EXEMPT_SECRETS = {"GITHUB_TOKEN"}
 
 def _mergeable(repo: str, number: int, cfg: dict, status: str, retry_blocked: bool = False) -> tuple[str, int]:
     """GitHub reports UNKNOWN right after the base moves and recomputes within seconds; re-fetch a bounded
@@ -23,6 +28,32 @@ def _mergeable(repo: str, number: int, cfg: dict, status: str, retry_blocked: bo
         status = gh.pr_view(repo, number, "mergeStateStatus").get("mergeStateStatus", "")
         polls += 1
     return status, polls
+
+def _added_lines(patch: str) -> str:
+    """Only lines a diff *adds* (not context, not removed) -- a workflow that deletes a secret
+    reference should never be flagged for no longer referencing it."""
+    return "\n".join(l[1:] for l in patch.splitlines() if l.startswith("+") and not l.startswith("+++"))
+
+def _secvar_row(repo: str, number: int, body: str) -> tuple[str, bool, str]:
+    """The 'secret must exist before a PR that reads it merges' row (#6): scans both the PR body and
+    every added line under `.github/**` in the PR's diff for `secrets.X`/`vars.X` references, then
+    checks each name against the repo's, org's, and every environment's configured secrets/variables.
+    `GITHUB_TOKEN` and any `github.*` context reference are exempt -- they aren't secrets/vars at all."""
+    gh_diff = "\n".join(_added_lines(f.get("patch") or "") for f in gh.pr_files(repo, number)
+                         if f.get("filename", "").startswith(".github/"))
+    refs = SECVAR_RE.findall(gh_diff) + SECVAR_RE.findall(body)
+    sec_refs = sorted({n.upper() for kind, n in refs if kind == "secrets"} - EXEMPT_SECRETS)
+    var_refs = sorted({n.upper() for kind, n in refs if kind == "vars"})
+    if not sec_refs and not var_refs:
+        return "secrets/vars referenced exist", True, "none referenced in body or .github/**"
+    configured_secrets, configured_vars, err = gh.configured_secrets_and_vars(repo)
+    if err:
+        return "secrets/vars referenced exist", False, err
+    cs = {s.upper() for s in configured_secrets}; cv = {v.upper() for v in configured_vars}
+    missing = [f"secrets.{s}" for s in sec_refs if s not in cs] + [f"vars.{v}" for v in var_refs if v not in cv]
+    checked = ", ".join(f"secrets.{s}" for s in sec_refs) + (", " if sec_refs and var_refs else "") + ", ".join(f"vars.{v}" for v in var_refs)
+    detail = f"missing: {', '.join(missing)}" if missing else f"checked: {checked}"
+    return "secrets/vars referenced exist", not missing, detail
 
 def check(repo: str, number: int, cfg: dict, checkout: str | None = None) -> dict:
     pr = gh.pr_view(repo, number, "number,title,body,headRefOid,headRefName,baseRefName,state,isDraft,mergeStateStatus,commits,labels")
@@ -65,8 +96,7 @@ def check(repo: str, number: int, cfg: dict, checkout: str | None = None) -> dic
     msgs = "" if cfg["merge"]["method"] == "squash" else "\n".join(c.get("messageHeadline", "") + "\n" + c.get("messageBody", "") for c in pr.get("commits", []))
     trailers = [t for t in cfg["merge"]["forbid_trailers"] if t.lower() in (msgs + "\n" + body).lower()]
     row("no forbidden trailers/footers in PR body" + ("" if cfg["merge"]["method"] == "squash" else "/commits"), not trailers, ", ".join(trailers))
-    secrets = re.findall(r"\$\{\{\s*(?:secrets|vars)\.([A-Z0-9_]+)\s*\}\}", body)
-    row("secrets/vars referenced exist", True, "declared in body: " + ", ".join(sorted(set(secrets))) if secrets else "none referenced")
+    row(*_secvar_row(repo, number, body))
     ok = all(r["ok"] for r in rows)
     return {"repo": repo, "number": number, "tip": tip, "title": pr["title"], "ok": ok, "rows": rows}
 

@@ -161,6 +161,7 @@ class T(unittest.TestCase):
              patch("pmloop.gh.run", return_value=tip + "\n"), \
              patch("pmloop.classify.for_pr", return_value={"tier": "none", "reason": "t"}), \
              patch("pmloop.events.latest_verdict", return_value=None), \
+             patch("pmloop.gh.pr_files", return_value=[]), \
              patch("pmloop.gh.checks_state", return_value=("success", [])):
             rep = premerge.check("o/r", 42, self.cfg)
         mrow = next(r for r in rep["rows"] if r["check"] == "mergeable")
@@ -181,6 +182,7 @@ class T(unittest.TestCase):
              patch("pmloop.gh.run", return_value=tip + "\n"), \
              patch("pmloop.classify.for_pr", return_value={"tier": "none", "reason": "t"}), \
              patch("pmloop.events.latest_verdict", return_value=None), \
+             patch("pmloop.gh.pr_files", return_value=[]), \
              patch("pmloop.gh.checks_state", return_value=("success", [])):
             rep = premerge.check("o/r", 42, self.cfg)
         mrow = next(r for r in rep["rows"] if r["check"] == "mergeable")
@@ -205,6 +207,7 @@ class T(unittest.TestCase):
              patch("pmloop.gh.run", return_value=tip + "\n"), \
              patch("pmloop.classify.for_pr", return_value={"tier": "none", "reason": "t"}), \
              patch("pmloop.events.latest_verdict", return_value=None), \
+             patch("pmloop.gh.pr_files", return_value=[]), \
              patch("pmloop.gh.checks_state", return_value=("success", [])):
             rep = premerge.check("o/r", 42, self.cfg)
         mrow = next(r for r in rep["rows"] if r["check"] == "mergeable")
@@ -226,6 +229,7 @@ class T(unittest.TestCase):
              patch("pmloop.gh.run", return_value=tip + "\n"), \
              patch("pmloop.classify.for_pr", return_value={"tier": "none", "reason": "t"}), \
              patch("pmloop.events.latest_verdict", return_value=None), \
+             patch("pmloop.gh.pr_files", return_value=[]), \
              patch("pmloop.gh.checks_state", return_value=("pending", ["ci=in_progress/None"])):
             rep = premerge.check("o/r", 42, self.cfg)
         mrow = next(r for r in rep["rows"] if r["check"] == "mergeable")
@@ -247,12 +251,104 @@ class T(unittest.TestCase):
              patch("pmloop.gh.run", return_value=tip + "\n"), \
              patch("pmloop.classify.for_pr", return_value={"tier": "none", "reason": "t"}), \
              patch("pmloop.events.latest_verdict", return_value=None), \
+             patch("pmloop.gh.pr_files", return_value=[]), \
              patch("pmloop.gh.checks_state", return_value=("success", [])):
             rep = premerge.check("o/r", 42, self.cfg)
         mrow = next(r for r in rep["rows"] if r["check"] == "mergeable")
         self.assertFalse(mrow["ok"]); self.assertIn("BLOCKED", mrow["detail"]); self.assertIn("stale cache", mrow["detail"])
         self.assertFalse(rep["ok"])
         self.assertEqual(calls["n"], 3)   # 1 initial + (attempts - 1) = 2 polls, then it stops
+
+    def _secvar_pr(self, extra_body=""):
+        return {"number": 9, "title": "T", "body": "**role:** dev · **model:** sonnet · **effort:** high" + extra_body,
+                "headRefOid": "a" * 40, "headRefName": "b", "baseRefName": "main", "state": "OPEN", "isDraft": False,
+                "commits": [], "labels": [], "mergeStateStatus": "CLEAN"}
+
+    def _run_secvar(self, files, secrets=(), variables=(), org_secrets=(), org_vars=(), env_names=(), env_secrets=None, env_vars=None, body=""):
+        env_secrets = env_secrets or {}; env_vars = env_vars or {}
+        pr = self._secvar_pr(body)
+        def fake_api_list(path, **kw):
+            key = kw.get("key")
+            if path.startswith("repos/o/r/actions/secrets"): return {"secrets": [{"name": n} for n in secrets]}[key]
+            if path.startswith("repos/o/r/actions/variables"): return {"variables": [{"name": n} for n in variables]}[key]
+            if path.startswith("repos/o/r/actions/organization-secrets"): return {"secrets": [{"name": n} for n in org_secrets]}[key]
+            if path.startswith("repos/o/r/actions/organization-variables"): return {"variables": [{"name": n} for n in org_vars]}[key]
+            if path.startswith("repos/o/r/environments") and "/secrets" not in path and "/variables" not in path:
+                return {"environments": [{"name": n} for n in env_names]}[key]
+            for env, names in env_secrets.items():
+                if path.startswith(f"repos/o/r/environments/{env}/secrets"): return {"secrets": [{"name": n} for n in names]}[key]
+            for env, names in env_vars.items():
+                if path.startswith(f"repos/o/r/environments/{env}/variables"): return {"variables": [{"name": n} for n in names]}[key]
+            raise AssertionError(f"unexpected api_list path: {path}")
+        with patch("pmloop.gh.pr_view", return_value=pr), \
+             patch("pmloop.gh.run", return_value="a" * 40 + "\n"), \
+             patch("pmloop.classify.for_pr", return_value={"tier": "none", "reason": "t"}), \
+             patch("pmloop.events.latest_verdict", return_value=None), \
+             patch("pmloop.gh.checks_state", return_value=("success", [])), \
+             patch("pmloop.gh.pr_files", return_value=files), \
+             patch("pmloop.gh.api_list", side_effect=fake_api_list):
+            rep = premerge.check("o/r", 9, self.cfg)
+        return next(r for r in rep["rows"] if r["check"] == "secrets/vars referenced exist")
+
+    def test_secvar_missing_secrets_and_vars_from_workflow_diff_fail_and_are_named(self):
+        """Reproduces #6: a workflow reads three secrets/vars that don't exist anywhere; only the pending
+        checks row used to fail. This row must now fail too and name all three."""
+        files = [{"filename": ".github/workflows/ci.yml", "patch":
+                  "@@ -1,2 +1,4 @@\n+  KEY: ${{ secrets.X_KEY }}\n+  SECRET: ${{ secrets.X_SECRET }}\n+  V: ${{ vars.X }}\n"}]
+        row = self._run_secvar(files)
+        self.assertFalse(row["ok"])
+        self.assertIn("secrets.X_KEY", row["detail"]); self.assertIn("secrets.X_SECRET", row["detail"]); self.assertIn("vars.X", row["detail"])
+
+    def test_secvar_present_in_repo_listings_passes(self):
+        files = [{"filename": ".github/workflows/ci.yml", "patch": "@@ -1,1 +1,2 @@\n+  K: ${{ secrets.X_KEY }}\n"}]
+        row = self._run_secvar(files, secrets=["X_KEY"])
+        self.assertTrue(row["ok"], row)
+
+    def test_secvar_present_only_in_environment_listing_passes(self):
+        """Covers the environment scope and the `key=` path of `api_list` for the first time."""
+        files = [{"filename": ".github/workflows/deploy.yml", "patch": "@@ -1,1 +1,2 @@\n+  K: ${{ secrets.DEPLOY_KEY }}\n"}]
+        row = self._run_secvar(files, env_names=["prod"], env_secrets={"prod": ["DEPLOY_KEY"]})
+        self.assertTrue(row["ok"], row)
+
+    def test_secvar_github_token_and_github_context_are_exempt(self):
+        files = [{"filename": ".github/workflows/ci.yml", "patch":
+                  "@@ -1,1 +1,3 @@\n+  T: ${{ secrets.GITHUB_TOKEN }}\n+  R: ${{ github.repository }}\n"}]
+        row = self._run_secvar_no_api(files)
+        self.assertTrue(row["ok"], row); self.assertIn("none referenced", row["detail"])
+
+    def _run_secvar_no_api(self, files):
+        pr = self._secvar_pr()
+        with patch("pmloop.gh.pr_view", return_value=pr), \
+             patch("pmloop.gh.run", return_value="a" * 40 + "\n"), \
+             patch("pmloop.classify.for_pr", return_value={"tier": "none", "reason": "t"}), \
+             patch("pmloop.events.latest_verdict", return_value=None), \
+             patch("pmloop.gh.checks_state", return_value=("success", [])), \
+             patch("pmloop.gh.pr_files", return_value=files), \
+             patch("pmloop.gh.api_list") as api_list:
+            rep = premerge.check("o/r", 9, self.cfg)
+            api_list.assert_not_called()
+        return next(r for r in rep["rows"] if r["check"] == "secrets/vars referenced exist")
+
+    def test_secvar_reference_outside_github_dir_is_not_scanned(self):
+        files = [{"filename": "README.md", "patch": "@@ -1,1 +1,2 @@\n+  ${{ secrets.FOO }}\n"}]
+        row = self._run_secvar_no_api(files)
+        self.assertTrue(row["ok"], row); self.assertIn("none referenced", row["detail"])
+
+    def test_secvar_removed_line_is_not_flagged(self):
+        files = [{"filename": ".github/workflows/ci.yml", "patch": "@@ -1,2 +1,1 @@\n-  K: ${{ secrets.OLD }}\n"}]
+        row = self._run_secvar_no_api(files)
+        self.assertTrue(row["ok"], row); self.assertIn("none referenced", row["detail"])
+
+    def test_secvar_multiple_refs_on_one_line_both_caught(self):
+        files = [{"filename": ".github/workflows/ci.yml", "patch":
+                  "@@ -1,1 +1,2 @@\n+  if: ${{ secrets.A || secrets.B }}\n"}]
+        row = self._run_secvar(files, secrets=["A"])
+        self.assertFalse(row["ok"]); self.assertIn("secrets.B", row["detail"]); self.assertNotIn("secrets.A", row["detail"])
+
+    def test_secvar_declared_in_body_only_is_still_checked(self):
+        """Issue asks to diff-scan .github/**, not to drop the pre-existing body scan."""
+        row = self._run_secvar([], body="\n\nreads ${{ secrets.BODY_ONLY }}")
+        self.assertFalse(row["ok"]); self.assertIn("secrets.BODY_ONLY", row["detail"])
 
     def test_merge_refuses_without_force_when_premerge_not_ok(self):
         fail_rep = {"repo": "o/r", "number": 7, "tip": "c" * 40, "title": "T", "ok": False,
