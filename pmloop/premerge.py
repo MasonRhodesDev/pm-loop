@@ -1,7 +1,7 @@
 """The pre-merge checklist as a script: every rule the PM used to re-derive by hand, as pass/fail rows."""
 from __future__ import annotations
 import re, subprocess, json, time
-from . import gh, events, classify, ledger
+from . import gh, events, classify, ledger, config
 
 CLOSING_RE = re.compile(r"\b(close[sd]?|fix(e[sd])?|resolve[sd]?)\b\s*:?\s*#(\d+)", re.I)
 ROLE_RE = re.compile(r"^\*\*role:\*\*\s*\S+.*\*\*model:\*\*.*\*\*effort:\*\*", re.M)
@@ -135,7 +135,7 @@ def check(repo: str, number: int, cfg: dict, checkout: str | None = None) -> dic
         review_ok = v is not None and v["verdict"] == req and tip.startswith(v["tip"])
         row(f"reviewer {req} at tip", review_ok,
             f"{v['verdict']}@{v['tip'][:7]} {v['url']}" if v else "no verdict")
-    st, bad = gh.checks_state(repo, tip, cfg["merge"].get("required_check", ""))
+    st, bad = gh.checks_state(repo, tip, config.required_check(cfg, repo))
     checks_ok = st == "success"
     row("checks green", checks_ok, st + (": " + ", ".join(bad) if bad else ""))
     checklist_green = review_ok and checks_ok

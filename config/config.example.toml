@@ -51,7 +51,14 @@ code = "light"
 
 [merge]
 method = "squash"
-required_check = "ci"       # the gate job; empty = every check-run must be green
+required_check = "ci"       # the gate job; empty = every check-run must be green. Either one name shared by
+                             # every repo in `repos` (as here), or a per-repo table when repos name it
+                             # differently:
+                             # [merge.required_check]
+                             # "MasonRhodesDev/diarch" = "ci"
+                             # "MasonRhodesDev/home-lab" = "build"
+                             # A repo missing from the table (or a genuinely nonexistent name) falls back to
+                             # "every check-run on the SHA must be green" rather than hanging pending forever.
 base = "main"
 
 [status]
