@@ -31,6 +31,27 @@ def _expr_secvar_refs(text: str) -> list[tuple[str, str]]:
     prose = CODE_SPAN_RE.sub("", text)
     return [ref for block in EXPR_BLOCK_RE.findall(prose) for ref in SECVAR_RE.findall(block)]
 
+def _closing_kw_violations(body: str, only_in: str) -> list[str]:
+    """pm-loop's own doctrine wants issue-closing prose written only as the canonical `Closes #N`
+    form. But CLOSING_RE matches `close[sd]?|fix(e[sd])?|resolve[sd]?` anywhere via `finditer`, so a
+    casual mid-sentence mention like "merged 361d59d, closes #568" (narrating a past merge, not
+    intending to close anything right now) used to get flagged right alongside a genuine but
+    malformed closing line like a bare `fixes #12` (#21). The same false-positive shape #11 hit on
+    the trailer/footer check: a match only counts as an intended closing *line* when it starts its
+    own line (after stripping leading whitespace) -- exactly the anchor `_forbidden_trailer_matches`
+    uses below. A match in the canonical form is never a violation regardless of position (that's
+    the whole point of allowing it); only a non-canonical match that also starts its own line is
+    flagged as a genuinely malformed closing line."""
+    bad = []
+    for line in body.splitlines():
+        stripped = line.lstrip()
+        for m in CLOSING_RE.finditer(stripped):
+            if m.start() != 0:
+                continue  # not at the start of its (whitespace-stripped) line: mid-sentence prose, not an intended closing line
+            if not m.group(0).startswith(only_in):
+                bad.append(m.group(0))
+    return bad
+
 def _forbidden_trailer_matches(text: str, patterns: list[str]) -> list[tuple[str, str]]:
     """Real trailers/footers appear as their own line: a git trailer is `Key: value` at line start
     (trailer convention), and the Claude Code footer is `Generated with [Claude Code]` at line start,
@@ -131,7 +152,7 @@ def check(repo: str, number: int, cfg: dict, checkout: str | None = None) -> dic
     row("mergeable", mstatus in MERGEABLE_OK, detail)
     body = pr.get("body") or ""
     row("role line in body", bool(ROLE_RE.search(body)), "")
-    bad_kw = [m.group(0) for m in CLOSING_RE.finditer(body) if not m.group(0).startswith(cfg["merge"]["closing_keywords_only_in"])]
+    bad_kw = _closing_kw_violations(body, cfg["merge"]["closing_keywords_only_in"])
     row("closing keywords only as 'Closes #N'", not bad_kw, "; ".join(bad_kw[:5]))
     # A squash merge writes its own message (pm merge composes it), so branch commits only matter for merge/rebase.
     checks_commits = cfg["merge"]["method"] != "squash"
