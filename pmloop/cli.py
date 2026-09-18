@@ -1,7 +1,17 @@
 """`pm` — every procedural piece of the loop as a subcommand. JSON out by default so agents and scripts can parse it."""
 from __future__ import annotations
-import argparse, json, os, sys, shlex
+import argparse, json, os, sys, shlex, subprocess
 from . import config, events, queue, classify, review, premerge, status, factcheck, watch, board, brief, run, ledger, llm, gh, lane
+
+def _git_show_base(file: str, ref: str) -> str:
+    """`file`'s content as of `ref`, for factcheck's `--base` diff (#2) -- run from the file's own
+    directory with a `./`-relative pathspec so git resolves it without needing the file's full
+    repo-root-relative path. A file that didn't exist at `ref` (renamed, newly added, or `file`/`ref`
+    just isn't in a git repo at all) makes `git show` fail -- treated as an empty base text, not a hard
+    error, so every line in the current file simply counts as "added"."""
+    d = os.path.dirname(os.path.abspath(file))
+    p = subprocess.run(["git", "-C", d, "show", f"{ref}:./{os.path.basename(file)}"], capture_output=True, text=True)
+    return p.stdout if p.returncode == 0 else ""
 
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="pm", description=__doc__)
@@ -20,6 +30,7 @@ def main(argv=None):
     s.add_argument("--model", default=None); s.add_argument("--effort", default=None)
     s.add_argument("--dry", action="store_true", help="entry + factcheck only, no comment posted")
     s = sub.add_parser("factcheck", help="verify every #N / sha / run id / quote in a file"); s.add_argument("repo"); s.add_argument("file"); s.add_argument("--quotes-from", action="append", default=[])
+    s.add_argument("--base", default=None, help="only fact-check lines added vs. this git ref (e.g. a PR's base branch) instead of the whole file -- fast on a large, mostly-unchanged file (#2)")
     s = sub.add_parser("watch", help="bounded wait for CI (one process, one event)"); s.add_argument("what", choices=["pr", "run"]); s.add_argument("repo"); s.add_argument("id", type=int); s.add_argument("--timeout", type=int)
     s = sub.add_parser("brief", help="brief for a fresh agent"); s.add_argument("role", choices=["dev", "fix", "reviewer", "pm"]); s.add_argument("repo", nargs="?"); s.add_argument("number", nargs="?", type=int); s.add_argument("--tier")
     s = sub.add_parser("lane", help="start a detached headless lane (own process, own budget) or list lanes"); s.add_argument("kind", choices=["dev", "fix", "reviewer", "spike", "list"]); s.add_argument("repo", nargs="?"); s.add_argument("number", nargs="?", type=int); s.add_argument("--tier"); s.add_argument("--extra", default="")
@@ -57,7 +68,9 @@ def main(argv=None):
         r = status.record(a.repo, a.pr, cfg, a.repo_dir, a.role, a.model or role_cfg["model"], a.effort or role_cfg["effort"], dry=a.dry)
         out(r); sys.exit(0 if r["ok"] else 1)
     elif a.cmd == "factcheck":
-        srcs = [open(p).read() for p in a.quotes_from]; r = factcheck.check(open(a.file).read(), a.repo, cfg, srcs or None); out(r); sys.exit(0 if r["ok"] else 1)
+        srcs = [open(p).read() for p in a.quotes_from]
+        base_text = _git_show_base(a.file, a.base) if a.base else None
+        r = factcheck.check(open(a.file).read(), a.repo, cfg, srcs or None, base_text=base_text); out(r); sys.exit(0 if r["ok"] else 1)
     elif a.cmd == "watch":
         r = watch.pr(a.repo, a.id, cfg, a.timeout) if a.what == "pr" else watch.run(a.repo, a.id, cfg, a.timeout); out(r); sys.exit(0 if r["result"] == "success" else 1)
     elif a.cmd == "brief":
