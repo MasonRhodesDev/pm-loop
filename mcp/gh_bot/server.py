@@ -160,10 +160,14 @@ def open_pr(repo: str, role: Role, model: str, effort: Effort, head: str, title:
 def review(repo: str, number: int, role: Role, model: str, effort: Effort, verdict: Verdict, tip: str, body: str) -> dict:
     """Post a review verdict (CLEAR/BLOCKED/VERIFIED/DISPUTED) naming the reviewed tip, as a PR review.
 
-    CLEAR posts a COMMENT review (never APPROVE: approvals are not part of the process and the
-    app may also be the PR author); BLOCKED posts REQUEST_CHANGES.
+    Always posts a COMMENT-state review, never APPROVE or REQUEST_CHANGES: this app opens the
+    PRs it reviews, and GitHub 422s a REQUEST_CHANGES (or APPROVE) review from the PR's own
+    author. The verdict lives in the body ("## VERDICT — tip `sha`"), not the review `state`,
+    and the read path (pmloop.events.latest_verdict) parses that body text on every review
+    regardless of state, so a COMMENT-state review carries a BLOCKED verdict just as reliably
+    and stays on the PR's reviews list (unlike the plain-comment fallback).
     """
-    event = "REQUEST_CHANGES" if verdict == "BLOCKED" else "COMMENT"
+    event = "COMMENT"
     text = f"## {verdict} — tip `{tip}`\n\n{body.strip()}"
     with _client() as c:
         r = c.post(

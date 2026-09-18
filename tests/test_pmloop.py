@@ -38,6 +38,22 @@ class T(unittest.TestCase):
         m = events.VERDICT_RE.search("**role:** test\n\n## CLEAR — tip `deadbeef1`\n\nfine"); self.assertEqual(m.group(1), "CLEAR"); self.assertEqual(m.group(2), "deadbeef1")
         m = events.VERDICT_RE.search("**role:** test · **model:** Claude Sonnet 5\n\n**Verdict: BLOCKED at 576efd2**\n\nTwo"); self.assertEqual((m.group(1), m.group(2)), ("BLOCKED", "576efd2"))
 
+    def test_latest_verdict_prefers_newer_comment_over_older_review(self):
+        """A BLOCKED verdict posted as a plain issue-comment fallback (e.g. because the review
+        endpoint 422'd, issue #12) must still win over an older CLEAR review, so premerge/board
+        don't read a stale CLEAR at tip just because the newest verdict landed as a comment."""
+        def fake_api_list(path, **kw):
+            if "reviews" in path:
+                return [{"body": "**role:** test\n\n## CLEAR — tip `aaaaaaa`", "submitted_at": "2026-01-01T00:00:00Z",
+                          "html_url": "u1", "user": {"login": "bot"}}]
+            if "comments" in path:
+                return [{"body": "**role:** test\n\n## BLOCKED — tip `bbbbbbb`", "created_at": "2026-01-02T00:00:00Z",
+                          "html_url": "u2", "user": {"login": "bot"}}]
+            return []
+        with patch("pmloop.gh.api_list", side_effect=fake_api_list):
+            v = events.latest_verdict("o/r", 1)
+        self.assertEqual(v["verdict"], "BLOCKED"); self.assertEqual(v["tip"], "bbbbbbb")
+
     def test_closing_keywords(self):
         bad = [m.group(0) for m in premerge.CLOSING_RE.finditer("fixes #12 and Closes #13, resolve #500's") if not m.group(0).startswith("Closes #")]
         self.assertEqual(bad, ["fixes #12", "resolve #500"])
