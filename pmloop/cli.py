@@ -28,6 +28,12 @@ def main(argv=None):
     s = sub.add_parser("llm", help="local model check / one-off prompt"); s.add_argument("text", nargs="?")
     s = sub.add_parser("git-env", help="export lines so git commits as the bot"); s.add_argument("role")
     a = ap.parse_args(argv); cfg = config.load(a.repo_dir)
+    # `pm classify <repo> <pr>` etc. accept the short repo name the board/doctrine use; resolve it
+    # once here (not per-subcommand) so lane.py/brief.py, which only get `repo` as a plain function
+    # argument from the dispatch below, see the resolved full name too. `--repo` on `events` is a
+    # list of poll targets, a different shape, so it's excluded via the isinstance(..., str) check.
+    if isinstance(getattr(a, "repo", None), str) and "/" not in a.repo:
+        a.repo = config.resolve_repo(cfg, a.repo)
     def out(x): print(json.dumps(x, indent=1, default=str))
     if a.cmd == "config":
         out(cfg[a.key] if a.key else cfg)

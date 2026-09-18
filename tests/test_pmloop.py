@@ -2,7 +2,7 @@ import json, os, tempfile, unittest, sys
 from pathlib import Path
 from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from pmloop import config, classify, events, queue, premerge, factcheck, status, ledger, brief, gh
+from pmloop import config, classify, events, queue, premerge, factcheck, status, ledger, brief, gh, cli
 
 class T(unittest.TestCase):
     def setUp(self):
@@ -12,6 +12,40 @@ class T(unittest.TestCase):
     def test_config_layers(self):
         d = tempfile.mkdtemp(); Path(d, ".pm-loop.toml").write_text('[roles.pm]\nmodel="opus"\n')
         c = config.load(d); self.assertEqual(c["roles"]["pm"]["model"], "opus"); self.assertEqual(c["roles"]["dev"]["model"], "sonnet")
+
+    def test_resolve_repo_short_name_matches_one_configured_repo(self):
+        c = dict(self.cfg); c["repos"] = ["MasonRhodesDev/diarch", "MasonRhodesDev/pm-loop"]
+        self.assertEqual(config.resolve_repo(c, "diarch"), "MasonRhodesDev/diarch")
+
+    def test_resolve_repo_already_qualified_is_unchanged(self):
+        c = dict(self.cfg); c["repos"] = ["MasonRhodesDev/diarch"]
+        self.assertEqual(config.resolve_repo(c, "Other/diarch"), "Other/diarch")
+
+    def test_resolve_repo_zero_matches_is_unchanged(self):
+        c = dict(self.cfg); c["repos"] = ["MasonRhodesDev/pm-loop"]
+        self.assertEqual(config.resolve_repo(c, "diarch"), "diarch")
+
+    def test_resolve_repo_ambiguous_short_name_is_unchanged(self):
+        """Two configured repos share a short name -- leave it alone so a genuine typo (or a real
+        ambiguity) surfaces as gh's own format error instead of silently picking the wrong one."""
+        c = dict(self.cfg); c["repos"] = ["OwnerA/diarch", "OwnerB/diarch"]
+        self.assertEqual(config.resolve_repo(c, "diarch"), "diarch")
+
+    def test_cli_resolves_short_repo_name_before_dispatching_to_classify(self):
+        """`pm classify diarch 5` -- the short name the board/doctrine print -- must reach
+        classify.for_pr as the full OWNER/REPO name gh itself requires (#1)."""
+        d = tempfile.mkdtemp(); Path(d, ".pm-loop.toml").write_text('repos = ["Owner/diarch"]\n')
+        with patch("pmloop.classify.for_pr", return_value={"tier": "none", "reason": "t"}) as fp, \
+             patch("builtins.print"):
+            cli.main(["--repo-dir", d, "classify", "diarch", "5"])
+        fp.assert_called_once_with("Owner/diarch", 5, unittest.mock.ANY)
+
+    def test_cli_leaves_short_repo_name_unresolved_when_ambiguous(self):
+        d = tempfile.mkdtemp(); Path(d, ".pm-loop.toml").write_text('repos = ["OwnerA/diarch", "OwnerB/diarch"]\n')
+        with patch("pmloop.classify.for_pr", return_value={"tier": "none", "reason": "t"}) as fp, \
+             patch("builtins.print"):
+            cli.main(["--repo-dir", d, "classify", "diarch", "5"])
+        fp.assert_called_once_with("diarch", 5, unittest.mock.ANY)
 
     def test_classify_tiers(self):
         c = self.cfg
@@ -447,6 +481,57 @@ class T(unittest.TestCase):
         citing an existing line rather than declaring a new one), is not a reference."""
         row = self._run_secvar_no_api([], body="\n\nsee `${{ secrets.QUOTED }}` in the old workflow")
         self.assertTrue(row["ok"], row); self.assertIn("none referenced", row["detail"])
+
+    def test_linked_issues_extracts_every_reference_form(self):
+        body = "Closes #3\n\nSame area as the fix for #4.\nFIXES #5\nThis is for #6, unrelated to #6 again."
+        self.assertEqual(premerge._linked_issues(body), [3, 4, 5, 6])
+
+    def test_linked_issues_empty_when_no_references(self):
+        self.assertEqual(premerge._linked_issues("just a plain description"), [])
+
+    def _run_owner_row(self, body, api_return=None, api_side_effect=None):
+        tip = "a" * 40; pr = self._base_pr(tip); pr["body"] = pr["body"] + "\n\n" + body
+        with patch("pmloop.gh.pr_view", return_value=pr), \
+             patch("pmloop.gh.run", return_value=tip + "\n"), \
+             patch("pmloop.classify.for_pr", return_value={"tier": "none", "reason": "t"}), \
+             patch("pmloop.events.latest_verdict", return_value=None), \
+             patch("pmloop.gh.pr_files", return_value=[]), \
+             patch("pmloop.gh.checks_state", return_value=("success", [])), \
+             patch("pmloop.gh.api", return_value=api_return, side_effect=api_side_effect):
+            rep = premerge.check("o/r", 42, self.cfg)
+        return next(r for r in rep["rows"] if r["check"] == "linked issue not needs-owner")
+
+    def test_owner_row_passes_when_no_issue_referenced(self):
+        row = self._run_owner_row("no reference here")
+        self.assertTrue(row["ok"], row); self.assertIn("no linked issues", row["detail"])
+
+    def test_owner_row_fails_when_linked_issue_carries_needs_owner(self):
+        row = self._run_owner_row("for #7", api_return={"title": "Decide the owner question", "labels": [{"name": "needs-owner"}]})
+        self.assertFalse(row["ok"], row); self.assertIn("#7", row["detail"]); self.assertIn("Decide the owner question", row["detail"])
+
+    def test_owner_row_passes_when_linked_issue_lacks_needs_owner(self):
+        row = self._run_owner_row("Closes #8", api_return={"title": "T", "labels": [{"name": "bug"}]})
+        self.assertTrue(row["ok"], row); self.assertIn("#8", row["detail"])
+
+    def test_owner_row_fails_closed_when_issue_lookup_errors(self):
+        """An unverifiable reference must never silently pass -- that would defeat the row's whole
+        purpose of never waving an owner question through."""
+        row = self._run_owner_row("for #9", api_side_effect=gh.GhError("404"))
+        self.assertFalse(row["ok"], row); self.assertIn("#9", row["detail"])
+
+    def test_owner_row_existing_tests_never_call_gh_api(self):
+        """Every pre-existing premerge test uses `_base_pr`, whose body references no issue -- this
+        row must make zero `gh.api` calls for them, so none of those tests needed to change."""
+        tip = "a" * 40; pr = self._base_pr(tip)
+        with patch("pmloop.gh.pr_view", return_value=pr), \
+             patch("pmloop.gh.run", return_value=tip + "\n"), \
+             patch("pmloop.classify.for_pr", return_value={"tier": "none", "reason": "t"}), \
+             patch("pmloop.events.latest_verdict", return_value=None), \
+             patch("pmloop.gh.pr_files", return_value=[]), \
+             patch("pmloop.gh.checks_state", return_value=("success", [])), \
+             patch("pmloop.gh.api") as api:
+            premerge.check("o/r", 42, self.cfg)
+            api.assert_not_called()
 
     def _run_trailer_row(self, body="", commits=None, method="squash"):
         tip = "a" * 40
