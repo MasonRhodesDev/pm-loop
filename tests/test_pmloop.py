@@ -188,6 +188,72 @@ class T(unittest.TestCase):
         self.assertFalse(rep["ok"])
         self.assertEqual(calls["n"], 3)   # 1 initial + (attempts - 1) = 2 polls, then it stops
 
+    def test_premerge_mergeable_blocked_retries_when_rest_of_checklist_green_then_passes(self):
+        """#20: mergeStateStatus BLOCKED is GitHub's other stale-cache flavor (same root cause as #8's
+        UNKNOWN) when review is CLEAR at tip and checks are green — retry it too, bounded, and let it pass
+        once the cache catches up."""
+        tip = "d" * 40
+        calls = {"n": 0}
+        base = self._base_pr(tip); base["mergeStateStatus"] = "BLOCKED"
+        def fake_pr_view(repo, number, fields=""):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return dict(base)
+            return {"mergeStateStatus": "BLOCKED" if calls["n"] < 3 else "CLEAN"}
+        self.cfg["merge"]["mergeable_poll_attempts"] = 5; self.cfg["merge"]["mergeable_poll_delay_s"] = 0
+        with patch("pmloop.gh.pr_view", side_effect=fake_pr_view), \
+             patch("pmloop.gh.run", return_value=tip + "\n"), \
+             patch("pmloop.classify.for_pr", return_value={"tier": "none", "reason": "t"}), \
+             patch("pmloop.events.latest_verdict", return_value=None), \
+             patch("pmloop.gh.checks_state", return_value=("success", [])):
+            rep = premerge.check("o/r", 42, self.cfg)
+        mrow = next(r for r in rep["rows"] if r["check"] == "mergeable")
+        self.assertTrue(mrow["ok"], mrow); self.assertIn("CLEAN", mrow["detail"]); self.assertIn("was BLOCKED", mrow["detail"])
+        self.assertTrue(rep["ok"], rep["rows"])
+        self.assertEqual(calls["n"], 3)   # 1 initial + 2 polls before it resolved, same bound as UNKNOWN
+
+    def test_premerge_mergeable_blocked_not_retried_when_checks_are_not_actually_green(self):
+        """A real block (here: checks not green) must fail outright, not get the stale-cache retry — proves
+        BLOCKED isn't waved through unconditionally, only when the rest of the checklist already says ok."""
+        tip = "e" * 40
+        calls = {"n": 0}
+        base = self._base_pr(tip); base["mergeStateStatus"] = "BLOCKED"
+        def fake_pr_view(repo, number, fields=""):
+            calls["n"] += 1
+            return dict(base) if calls["n"] == 1 else {"mergeStateStatus": "BLOCKED"}
+        self.cfg["merge"]["mergeable_poll_attempts"] = 5; self.cfg["merge"]["mergeable_poll_delay_s"] = 0
+        with patch("pmloop.gh.pr_view", side_effect=fake_pr_view), \
+             patch("pmloop.gh.run", return_value=tip + "\n"), \
+             patch("pmloop.classify.for_pr", return_value={"tier": "none", "reason": "t"}), \
+             patch("pmloop.events.latest_verdict", return_value=None), \
+             patch("pmloop.gh.checks_state", return_value=("pending", ["ci=in_progress/None"])):
+            rep = premerge.check("o/r", 42, self.cfg)
+        mrow = next(r for r in rep["rows"] if r["check"] == "mergeable")
+        self.assertFalse(mrow["ok"]); self.assertEqual(mrow["detail"], "BLOCKED")
+        self.assertFalse(rep["ok"])
+        self.assertEqual(calls["n"], 1)   # no poll attempted: checks aren't green, so this isn't the stale-cache case
+
+    def test_premerge_mergeable_blocked_gives_up_after_bounded_retries_even_when_checklist_green(self):
+        """Still BLOCKED after the bound despite a green checklist: decide (fail), don't retry forever, and
+        say so — this is a real block this checklist can't see (e.g. a rule it doesn't evaluate)."""
+        tip = "f" * 40
+        calls = {"n": 0}
+        base = self._base_pr(tip); base["mergeStateStatus"] = "BLOCKED"
+        def fake_pr_view(repo, number, fields=""):
+            calls["n"] += 1
+            return dict(base) if calls["n"] == 1 else {"mergeStateStatus": "BLOCKED"}
+        self.cfg["merge"]["mergeable_poll_attempts"] = 3; self.cfg["merge"]["mergeable_poll_delay_s"] = 0
+        with patch("pmloop.gh.pr_view", side_effect=fake_pr_view), \
+             patch("pmloop.gh.run", return_value=tip + "\n"), \
+             patch("pmloop.classify.for_pr", return_value={"tier": "none", "reason": "t"}), \
+             patch("pmloop.events.latest_verdict", return_value=None), \
+             patch("pmloop.gh.checks_state", return_value=("success", [])):
+            rep = premerge.check("o/r", 42, self.cfg)
+        mrow = next(r for r in rep["rows"] if r["check"] == "mergeable")
+        self.assertFalse(mrow["ok"]); self.assertIn("BLOCKED", mrow["detail"]); self.assertIn("stale cache", mrow["detail"])
+        self.assertFalse(rep["ok"])
+        self.assertEqual(calls["n"], 3)   # 1 initial + (attempts - 1) = 2 polls, then it stops
+
     def test_merge_refuses_without_force_when_premerge_not_ok(self):
         fail_rep = {"repo": "o/r", "number": 7, "tip": "c" * 40, "title": "T", "ok": False,
                     "rows": [{"check": "checks green", "ok": False, "detail": "pending"}]}
