@@ -15,6 +15,10 @@ def main(argv=None):
     s = sub.add_parser("premerge", help="pre-merge checklist"); s.add_argument("repo"); s.add_argument("pr", type=int)
     s = sub.add_parser("merge", help="checklist then squash-merge as the app"); s.add_argument("repo"); s.add_argument("pr", type=int); s.add_argument("--subject"); s.add_argument("--body", default=""); s.add_argument("--model", default=None); s.add_argument("--effort", default=None); s.add_argument("--dry", action="store_true", help="checklist + the exact merge payload, no PUT"); s.add_argument("--force-premerge-ok", action="store_true", dest="force_premerge_ok", help="human override: merge despite a failing premerge row; logged to the ledger")
     s = sub.add_parser("status-entry", help="STATUS.md entry from facts"); s.add_argument("repo"); s.add_argument("pr", type=int); s.add_argument("--json", action="store_true")
+    s = sub.add_parser("record", help="status-entry + factcheck + comment on the merged PR in one step; refuses to post if factcheck fails")
+    s.add_argument("repo"); s.add_argument("pr", type=int); s.add_argument("--role", default="docs")
+    s.add_argument("--model", default=None); s.add_argument("--effort", default=None)
+    s.add_argument("--dry", action="store_true", help="entry + factcheck only, no comment posted")
     s = sub.add_parser("factcheck", help="verify every #N / sha / run id / quote in a file"); s.add_argument("repo"); s.add_argument("file"); s.add_argument("--quotes-from", action="append", default=[])
     s = sub.add_parser("watch", help="bounded wait for CI (one process, one event)"); s.add_argument("what", choices=["pr", "run"]); s.add_argument("repo"); s.add_argument("id", type=int); s.add_argument("--timeout", type=int)
     s = sub.add_parser("brief", help="brief for a fresh agent"); s.add_argument("role", choices=["dev", "fix", "reviewer", "pm"]); s.add_argument("repo", nargs="?"); s.add_argument("number", nargs="?", type=int); s.add_argument("--tier")
@@ -42,6 +46,10 @@ def main(argv=None):
         role = cfg["roles"]["pm"]; r = premerge.merge(a.repo, a.pr, cfg, "pm", a.model or role["model"], a.effort or role["effort"], a.subject, a.body, dry=a.dry, force=a.force_premerge_ok); out(r); sys.exit(0 if (r["merged"] or a.dry) else 1)
     elif a.cmd == "status-entry":
         print(json.dumps(status.facts(a.repo, a.pr, a.repo_dir), indent=1) if a.json else status.entry(a.repo, a.pr, cfg, a.repo_dir))
+    elif a.cmd == "record":
+        role_cfg = cfg["roles"]["pm"]
+        r = status.record(a.repo, a.pr, cfg, a.repo_dir, a.role, a.model or role_cfg["model"], a.effort or role_cfg["effort"], dry=a.dry)
+        out(r); sys.exit(0 if r["ok"] else 1)
     elif a.cmd == "factcheck":
         srcs = [open(p).read() for p in a.quotes_from]; r = factcheck.check(open(a.file).read(), a.repo, cfg, srcs or None); out(r); sys.exit(0 if r["ok"] else 1)
     elif a.cmd == "watch":

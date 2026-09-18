@@ -80,7 +80,7 @@ def pm(cfg: dict, board_md: str, status_tail: str, extra: str = "", headless: bo
 - Reviews: `pm classify <repo> <pr>` decides the tier; `pm brief reviewer <repo> <pr>` builds the brief; spawn a FRESH reviewer agent (`reviewer-light` / `reviewer-adversarial`) — never resume one.
 - Dev work: `pm brief dev <repo> <issue>`; a BLOCKED PR: `pm brief fix <repo> <pr>` (fixes land on the PR's own branch, never a new PR).
 - Dispatch: {"HEADLESS TICK — spawn every lane/reviewer with `pm lane <dev|fix|reviewer> <repo> <n>` (a detached process with its own budget; it reports back as a queue event). Do NOT use the Agent tool: this tick ends when you stop, and an Agent would die with it." if headless else "spawn lanes/reviewers with the Agent tool (agents `pm-loop:dev-lane`, `pm-loop:reviewer-light`, `pm-loop:reviewer-adversarial`) using the brief as the prompt; they run in the foreground, so wait for each report before deciding the next step."}
-- After a merge: `pm status-entry <repo> <pr>` writes the STATUS entry; `pm factcheck` verifies it; open the STATUS PR with the MCP tool (label: no-review) — no STATUS lane, no fact-check lane.
+- After a merge: `pm record <repo> <pr>` posts one fact-checked record as a comment on the merged PR (merge sha, squash head, files, issues, lane, check-run state at write time) and refuses to post if factcheck fails — no STATUS PR, no STATUS lane, no fact-check lane. The PR list is the board.
 - Owner decisions: never decide; label `{cfg['labels']['needs_owner']}` with a short numbered CTA ("Reply with a number").
 - Everything stays private. No attribution trailers. No polling. No sub-agents of sub-agents.
 {extra}
