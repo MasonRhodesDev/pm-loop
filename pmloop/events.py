@@ -6,7 +6,7 @@ comment (owner replied). Each event is small; the PM brief is built from the tab
 """
 from __future__ import annotations
 import re, json, hmac, hashlib, time
-from . import gh, queue
+from . import gh, queue, config
 
 # Both record shapes in use: the MCP `review` tool ("## CLEAR — tip `sha`") and hand-posted comments ("**Verdict: CLEAR at sha**")
 VERDICT_RE = re.compile(r"(?:^##\s*|\*\*Verdict:\s*)(CLEAR|BLOCKED|VERIFIED|DISPUTED)\s*(?:[—-]+\s*tip\s*|at\s*)`?([0-9a-f]{7,40})`?", re.M | re.I)
@@ -16,7 +16,7 @@ def snapshot(repo: str, cfg: dict) -> dict:
     prs = json.loads(gh.run(["pr", "list", "-R", repo, "--state", "open", "--limit", "100",
                              "--json", "number,title,headRefOid,headRefName,baseRefName,isDraft,labels,updatedAt,mergeStateStatus"]))
     out = {"prs": {}, "issues": {}, "main": {}}
-    req = cfg["merge"].get("required_check", "")
+    req = config.required_check(cfg, repo)
     for pr in prs:
         n = str(pr["number"]); sha = pr["headRefOid"]
         state, bad = gh.checks_state(repo, sha, req)

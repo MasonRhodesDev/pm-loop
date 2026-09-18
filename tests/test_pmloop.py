@@ -2,7 +2,7 @@ import json, os, tempfile, unittest, sys
 from pathlib import Path
 from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from pmloop import config, classify, events, queue, premerge, factcheck, status, ledger, brief
+from pmloop import config, classify, events, queue, premerge, factcheck, status, ledger, brief, gh
 
 class T(unittest.TestCase):
     def setUp(self):
@@ -581,6 +581,93 @@ class T(unittest.TestCase):
         self.assertEqual(len(lines), 1)
         entry = json.loads(lines[0])
         self.assertIn("force-premerge-ok", entry["note"]); self.assertIn("checks green", entry["note"])
+
+    # -- #7: required_check fallback when the named check doesn't exist on the SHA at all --
+
+    def test_checks_state_required_present_in_progress_is_pending(self):
+        """Regression guard: a named check that exists but hasn't finished is still pending, unfiltered."""
+        runs = [{"name": "ci", "status": "in_progress", "conclusion": None}]
+        with patch("pmloop.gh.check_runs", return_value=runs):
+            self.assertEqual(gh.checks_state("o/r", "a"*40, "ci"), ("pending", ["ci=in_progress/None"]))
+
+    def test_checks_state_required_present_success(self):
+        runs = [{"name": "ci", "status": "completed", "conclusion": "success"}]
+        with patch("pmloop.gh.check_runs", return_value=runs):
+            self.assertEqual(gh.checks_state("o/r", "a"*40, "ci"), ("success", []))
+
+    def test_checks_state_required_missing_falls_back_to_all_green(self):
+        """The core bug (#7): `required` names a job this repo's workflow doesn't have at all, but every
+        actual check-run is green -- must report success, not pending-forever."""
+        runs = [{"name": "build", "status": "completed", "conclusion": "success"},
+                {"name": "lint", "status": "completed", "conclusion": "success"}]
+        with patch("pmloop.gh.check_runs", return_value=runs):
+            state, bad = gh.checks_state("o/r", "a"*40, "ci")
+        self.assertEqual(state, "success")
+        self.assertEqual(bad, ["ci=missing (fell back to all checks)"])
+
+    def test_checks_state_required_missing_falls_back_and_reports_real_failure(self):
+        runs = [{"name": "build", "status": "completed", "conclusion": "failure"}]
+        with patch("pmloop.gh.check_runs", return_value=runs):
+            state, bad = gh.checks_state("o/r", "a"*40, "ci")
+        self.assertEqual(state, "failure")
+        self.assertEqual(bad, ["ci=missing (fell back to all checks)", "build=completed/failure"])
+
+    def test_checks_state_required_missing_falls_back_and_reports_pending(self):
+        runs = [{"name": "build", "status": "in_progress", "conclusion": None}]
+        with patch("pmloop.gh.check_runs", return_value=runs):
+            state, bad = gh.checks_state("o/r", "a"*40, "ci")
+        self.assertEqual(state, "pending")
+        self.assertEqual(bad, ["ci=missing (fell back to all checks)", "build=in_progress/None"])
+
+    def test_checks_state_no_runs_at_all_is_still_plain_pending(self):
+        """Nothing has started yet -- genuinely nothing to fall back to, unchanged from before."""
+        with patch("pmloop.gh.check_runs", return_value=[]):
+            self.assertEqual(gh.checks_state("o/r", "a"*40, "ci"), ("pending", ["ci=missing"]))
+
+    def test_required_check_resolves_string_for_any_repo(self):
+        self.cfg["merge"]["required_check"] = "ci"
+        self.assertEqual(config.required_check(self.cfg, "o/r1"), "ci")
+        self.assertEqual(config.required_check(self.cfg, "o/r2"), "ci")
+
+    def test_required_check_resolves_per_repo_map(self):
+        self.cfg["merge"]["required_check"] = {"o/r1": "build", "o/r2": "test"}
+        self.assertEqual(config.required_check(self.cfg, "o/r1"), "build")
+        self.assertEqual(config.required_check(self.cfg, "o/r2"), "test")
+
+    def test_required_check_map_miss_falls_back_to_empty_not_error(self):
+        self.cfg["merge"]["required_check"] = {"o/r1": "build"}
+        self.assertEqual(config.required_check(self.cfg, "o/r-not-listed"), "")
+
+    def test_required_check_layering_repo_toml_can_set_a_map(self):
+        """A `[merge.required_check]` table in the user config loads and merges intact (not just the
+        in-process helper -- this exercises tomllib + config._merge end to end)."""
+        d = tempfile.mkdtemp()
+        Path(d, ".pm-loop.toml").write_text('[merge.required_check]\n"o/r" = "ci"\n')
+        c = config.load(d)
+        self.assertEqual(c["merge"]["required_check"], {"o/r": "ci"})
+        self.assertEqual(config.required_check(c, "o/r"), "ci")
+
+    def test_premerge_passes_resolved_required_check_to_checks_state(self):
+        tip = "a" * 40
+        self.cfg["merge"]["required_check"] = {"o/r": "ci", "other/repo": "build"}
+        with patch("pmloop.gh.pr_view", return_value=self._base_pr(tip)), \
+             patch("pmloop.gh.run", return_value=tip + "\n"), \
+             patch("pmloop.classify.for_pr", return_value={"tier": "none", "reason": "t"}), \
+             patch("pmloop.events.latest_verdict", return_value=None), \
+             patch("pmloop.gh.pr_files", return_value=[]), \
+             patch("pmloop.gh.checks_state", return_value=("success", [])) as cs:
+            premerge.check("o/r", 42, self.cfg)
+        cs.assert_called_once_with("o/r", tip, "ci")
+
+    def test_events_snapshot_passes_resolved_required_check_per_repo(self):
+        self.cfg["merge"]["required_check"] = {"o/r": "ci"}
+        prs = [{"number": 1, "title": "t", "headRefOid": "a"*40, "headRefName": "b", "baseRefName": "main",
+                "isDraft": False, "labels": [], "updatedAt": "t", "mergeStateStatus": "CLEAN"}]
+        with patch("pmloop.gh.run", side_effect=[json.dumps(prs), json.dumps([]), json.dumps([])]), \
+             patch("pmloop.events.latest_verdict", return_value=None), \
+             patch("pmloop.gh.checks_state", return_value=("success", [])) as cs:
+            events.snapshot("o/r", self.cfg)
+        cs.assert_called_once_with("o/r", "a"*40, "ci")
 
 if __name__ == "__main__":
     unittest.main()

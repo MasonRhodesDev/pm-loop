@@ -77,17 +77,32 @@ def configured_secrets_and_vars(repo: str) -> tuple[set[str], set[str], str]:
     return secrets, variables, ""
 
 def checks_state(repo: str, sha: str, required: str = "") -> tuple[str, list[str]]:
-    """('success'|'pending'|'failure', [bad runs]) — mirrors the merge tool's rule; `required` narrows to one check name."""
-    runs = check_runs(repo, sha)
+    """('success'|'pending'|'failure', [bad runs]) — mirrors the merge tool's rule; `required` narrows to one
+    check name. If `required` is set but no check-run of that name exists on this SHA at all -- as opposed
+    to one that exists but hasn't finished -- that's a workflow that will never produce it (e.g. the gate
+    job is misnamed for this repo, #7), so we fall back to evaluating every check-run on the SHA instead of
+    reporting a nonexistent check as pending forever, and note the fallback in the returned detail list. If
+    there are no check-runs on the SHA at all yet, there's nothing to fall back to -- still plain pending."""
+    all_runs = check_runs(repo, sha)
+    runs = all_runs
+    note = None
     if required:
-        runs = [r for r in runs if r["name"] == required]
-        if not runs:
+        named = [r for r in all_runs if r["name"] == required]
+        if named:
+            runs = named
+        elif not all_runs:
             return "pending", [f"{required}=missing"]
+        else:
+            note = f"{required}=missing (fell back to all checks)"
     bad = [f"{r['name']}={r['status']}/{r['conclusion']}" for r in runs
            if r["status"] != "completed" or r["conclusion"] not in ("success", "skipped", "neutral")]
     if any(r["status"] != "completed" for r in runs):
-        return "pending", bad
-    return ("failure" if bad else "success"), bad
+        state = "pending"
+    else:
+        state = "failure" if bad else "success"
+    if note:
+        bad = [note] + bad
+    return state, bad
 
 # ---- GitHub App token (same scheme as gh-agent: RS256 JWT via openssl, cached until 5 min before expiry) ----
 def _b64url(b: bytes) -> str:

@@ -85,5 +85,13 @@ def load(repo_dir: str | os.PathLike | None = None) -> dict:
     cfg["bot"]["key_path"] = str(Path(cfg["bot"]["key_path"]).expanduser())
     return cfg
 
+def required_check(cfg: dict, repo: str) -> str:
+    """`merge.required_check`, resolved for one repo: either a single check name shared by every repo
+    (backward-compatible string, the historical shape) or a `{repo: check_name}` map, so a user-level
+    config can gate different repos on differently-named jobs without a `.pm-loop.toml` PR in each one
+    (#7). A repo missing from the map has no configured gate -- same as "" (every check-run must be green)."""
+    rc = cfg["merge"].get("required_check", "")
+    return rc.get(repo, "") if isinstance(rc, dict) else rc
+
 def state_dir(cfg: dict) -> Path:
     p = Path(cfg["state_dir"]); p.mkdir(parents=True, exist_ok=True); return p
