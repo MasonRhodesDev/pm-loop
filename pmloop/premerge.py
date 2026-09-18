@@ -80,6 +80,41 @@ def _forbidden_trailer_matches(text: str, patterns: list[str]) -> list[tuple[str
 def _linked_issues(body: str) -> list[int]:
     return sorted({int(n) for n in LINKED_ISSUE_RE.findall(body)})
 
+def _author_login(pr: dict) -> str:
+    return (pr.get("author") or {}).get("login", "")
+
+def _is_bot_author(pr: dict) -> bool:
+    """True for a bot- or GitHub-App-authored PR. `gh pr view --json author` reports an `is_bot` flag
+    directly (confirmed against a live Dependabot PR: `{"login": "app/dependabot", "is_bot": true}`) --
+    that's the authoritative signal. The login-pattern check (`<name>[bot]` for a bot account, `app/<slug>`
+    for a GitHub App actor -- the same two shapes `classify.for_pr` matches against `bot_authors`) is only
+    a fallback for a `gh` version that doesn't emit `is_bot`."""
+    author = pr.get("author") or {}
+    if "is_bot" in author:
+        return bool(author["is_bot"])
+    login = author.get("login", "")
+    return login.endswith("[bot]") or login.startswith("app/")
+
+def _is_app_login(login: str, cfg: dict) -> bool:
+    slug = cfg["bot"]["slug"].removesuffix("[bot]")
+    return bool(slug) and login in (slug, f"{slug}[bot]", f"app/{slug}")
+
+def _role_line_row(pr: dict, cfg: dict) -> tuple[str, bool, str]:
+    """`pm merge` composes the squash commit's own subject/body -- including the role line -- at merge
+    time (see `merge()` below); it never copies the PR body verbatim. So this row's job is really "will
+    the eventual commit carry a role line", which is guaranteed for the app's own dev-lane PRs (the
+    `open_pr` tool prepends the role line itself) but is never true of a non-app bot's PR body (Dependabot,
+    Renovate, ...) since those bots have no idea pm-loop's doctrine exists. Checking a non-app bot's raw
+    PR body for a role line it was never going to write is checking the wrong artifact entirely (#2) --
+    skip the row instead of failing every such PR after review+checks already went green. Only skips
+    when `bot.slug` is actually configured -- with no slug there's no way to tell "some other bot" from
+    "the app itself", and this checklist fails a row rather than silently waving it through on an
+    unconfigured/unverifiable signal (same stance `_owner_row` takes on an unresolvable reference)."""
+    author = _author_login(pr)
+    if cfg["bot"]["slug"] and _is_bot_author(pr) and not _is_app_login(author, cfg):
+        return "role line in body", True, f"skipped: author is bot {author}, not the app"
+    return "role line in body", bool(ROLE_RE.search(pr.get("body") or "")), ""
+
 def _owner_row(repo: str, body: str, cfg: dict) -> tuple[str, bool, str]:
     """pm-loop's doctrine is 'never decide owner questions' -- a PR whose linked issue carries
     `needs-owner` must never read as a MERGE CANDIDATE just because its own checklist rows (review,
@@ -151,7 +186,7 @@ def _secvar_row(repo: str, number: int, body: str) -> tuple[str, bool, str]:
     return "secrets/vars referenced exist", not missing, detail
 
 def check(repo: str, number: int, cfg: dict, checkout: str | None = None) -> dict:
-    pr = gh.pr_view(repo, number, "number,title,body,headRefOid,headRefName,baseRefName,state,isDraft,mergeStateStatus,commits,labels")
+    pr = gh.pr_view(repo, number, "number,title,body,headRefOid,headRefName,baseRefName,state,isDraft,mergeStateStatus,commits,labels,author")
     tip = pr["headRefOid"]; rows = []
     def row(name, ok, detail=""):
         rows.append({"check": name, "ok": bool(ok), "detail": detail})
@@ -185,7 +220,7 @@ def check(repo: str, number: int, cfg: dict, checkout: str | None = None) -> dic
     row("mergeable", mstatus in MERGEABLE_OK, detail)
     body = pr.get("body") or ""
     row(*_owner_row(repo, body, cfg))
-    row("role line in body", bool(ROLE_RE.search(body)), "")
+    row(*_role_line_row(pr, cfg))
     bad_kw = _closing_kw_violations(body, cfg["merge"]["closing_keywords_only_in"])
     row("closing keywords only as 'Closes #N'", not bad_kw, "; ".join(bad_kw[:5]))
     # A squash merge writes its own message (pm merge composes it), so branch commits only matter for merge/rebase.

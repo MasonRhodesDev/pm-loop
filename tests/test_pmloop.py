@@ -251,6 +251,73 @@ class T(unittest.TestCase):
         r = factcheck.check('he said "exactly these words here"', "o/r", self.cfg, ["... exactly these words here ..."])
         self.assertTrue(r["ok"]); r = factcheck.check('"not in the sources at all"', "o/r", self.cfg, ["x"]); self.assertFalse(r["ok"])
 
+    def test_factcheck_ignores_comment_and_review_id_urls(self):
+        """#2: a comment-id URL fragment like '#issuecomment-5733586153' or
+        '.../pullrequestreview-5251441874' carries a 10-digit id of its own that isn't a workflow run --
+        must not be extracted as one (previously misreported 'no such workflow run')."""
+        text = ("see https://github.com/o/r/pull/24#issuecomment-5733586153 and "
+                "https://github.com/o/r/pull/24#pullrequestreview-5251441874 for context")
+        r = factcheck.check(text, "o/r", self.cfg)
+        self.assertEqual(r["checked"], 0, r["findings"])
+
+    def test_factcheck_ignores_job_id_in_run_url(self):
+        """A `/actions/runs/<run-id>/job/<job-id>` URL's job id is also a 9-12 digit number right after
+        `/job/` -- must not be extracted as a second (bogus) run id; the real run id right after
+        `/actions/runs/` is still checked."""
+        with patch("pmloop.gh.run", return_value=json.dumps({"s": "completed", "c": "success", "h": "a" * 40})) as run:
+            r = factcheck.check("see .../actions/runs/1234567890/job/9876543210 for logs", "o/r", self.cfg)
+        self.assertEqual(r["checked"], 1, r["findings"])
+        self.assertEqual(r["findings"][0]["value"], "1234567890")
+        run.assert_called_once()
+
+    def test_factcheck_still_finds_a_real_workflow_run_id(self):
+        with patch("pmloop.gh.run", return_value=json.dumps({"s": "completed", "c": "success", "h": "a" * 40})):
+            r = factcheck.check("the run at actions/runs/1234567890 passed", "o/r", self.cfg)
+        self.assertEqual(r["checked"], 1); self.assertTrue(r["findings"][0]["ok"], r["findings"])
+        self.assertEqual(r["findings"][0]["value"], "1234567890")
+
+    def test_added_only_keeps_only_new_lines(self):
+        base = "line one\nline two\n"
+        new = "line one\nline two\nsee #5 for context\n"
+        self.assertEqual(factcheck.added_only(base, new), "see #5 for context")
+
+    def test_added_only_drops_removed_and_unchanged_refs(self):
+        """A reference that was already there, or one that got deleted, must not be re-checked -- only
+        genuinely new content counts (#2)."""
+        base = "old: see #1\nkeep this\n"
+        new = "keep this\nnew: see #2\n"
+        self.assertEqual(factcheck.added_only(base, new), "new: see #2")
+
+    def test_factcheck_base_text_only_checks_added_lines(self):
+        """#2: with `base_text` given, only the lines added relative to it are scanned -- an unchanged
+        reference already present in the base is not re-verified."""
+        base = "already checked: #1\n"
+        new = "already checked: #1\nbrand new: #2\n"
+        seen = []
+        def fake_run(args, **kw):
+            seen.append(args[1])
+            return json.dumps({"title": "t", "state": "OPEN", "pr": False})
+        with patch("pmloop.gh.run", side_effect=fake_run):
+            r = factcheck.check(new, "o/r", self.cfg, base_text=base)
+        self.assertEqual(r["checked"], 1)
+        self.assertEqual(seen, ["repos/o/r/issues/2"])
+
+    def test_cli_factcheck_base_resolves_via_git_show(self):
+        """`pm factcheck --base <ref>` shells out to `git show <ref>:./<file>` from the file's own
+        directory, and a nonzero exit (file didn't exist at that ref) is treated as an empty base rather
+        than an error."""
+        d = tempfile.mkdtemp(); f = Path(d, "STATUS.md"); f.write_text("only new: #9\n")
+        with patch("subprocess.run") as run, \
+             patch("pmloop.factcheck.check", return_value={"ok": True, "checked": 0, "findings": []}) as fc, \
+             patch("builtins.print"):
+            run.return_value = unittest.mock.Mock(returncode=1, stdout="")
+            with self.assertRaises(SystemExit) as cm:
+                cli.main(["--repo-dir", d, "factcheck", "o/r", str(f), "--base", "main"])
+            self.assertEqual(cm.exception.code, 0)
+        args = run.call_args[0][0]
+        self.assertEqual(args[:3], ["git", "-C", d]); self.assertIn("main:./STATUS.md", args)
+        fc.assert_called_once(); self.assertEqual(fc.call_args.kwargs["base_text"], "")
+
     def _base_pr(self, tip):
         return {"number": 42, "title": "T", "body": "**role:** dev · **model:** sonnet · **effort:** high",
                 "headRefOid": tip, "headRefName": "b", "baseRefName": "main", "state": "OPEN", "isDraft": False,
@@ -547,6 +614,67 @@ class T(unittest.TestCase):
              patch("pmloop.gh.checks_state", return_value=("success", [])):
             rep = premerge.check("o/r", 42, self.cfg)
         return next(r for r in rep["rows"] if r["check"].startswith("no forbidden trailers"))
+
+    def _run_role_row(self, author=None, is_bot=None, body_override=None):
+        tip = "a" * 40
+        pr = self._base_pr(tip)
+        if body_override is not None:
+            pr["body"] = body_override
+        if author is not None:
+            a = {"login": author}
+            if is_bot is not None:
+                a["is_bot"] = is_bot
+            pr["author"] = a
+        with patch("pmloop.gh.pr_view", return_value=pr), \
+             patch("pmloop.gh.run", return_value=tip + "\n"), \
+             patch("pmloop.classify.for_pr", return_value={"tier": "none", "reason": "t"}), \
+             patch("pmloop.events.latest_verdict", return_value=None), \
+             patch("pmloop.gh.pr_files", return_value=[]), \
+             patch("pmloop.gh.checks_state", return_value=("success", [])):
+            rep = premerge.check("o/r", 42, self.cfg)
+        return next(r for r in rep["rows"] if r["check"] == "role line in body")
+
+    def test_role_line_row_skipped_for_non_app_bot_author(self):
+        """#2: dependabot never writes a role line -- `pm merge` composes the squash commit's own
+        subject/body (role line included) at merge time, so checking dependabot's raw PR body for a
+        role line it was never going to write is checking the wrong artifact. `gh pr view --json author`
+        reports Dependabot as `{"login": "app/dependabot", "is_bot": true}` (verified live against a real
+        Dependabot PR) -- the row must pass with a note explaining the skip, not fail every such PR."""
+        self.cfg["bot"]["slug"] = "mason-agent"
+        row = self._run_role_row(author="app/dependabot", is_bot=True, body_override="bump foo from 1.0 to 1.1")
+        self.assertTrue(row["ok"], row)
+        self.assertIn("skipped", row["detail"]); self.assertIn("app/dependabot", row["detail"])
+
+    def test_role_line_row_skip_falls_back_to_login_pattern_without_is_bot_field(self):
+        """An older `gh` that doesn't emit `is_bot` at all still gets the skip via the `<name>[bot]`
+        login-pattern fallback."""
+        self.cfg["bot"]["slug"] = "mason-agent"
+        row = self._run_role_row(author="dependabot[bot]", body_override="bump foo from 1.0 to 1.1")
+        self.assertTrue(row["ok"], row)
+
+    def test_role_line_row_still_checked_for_the_app_itself(self):
+        """The configured app's own dev-lane PRs (reported as `app/<slug>`, `is_bot: true`, same as any
+        other GitHub App) DO write their own role line (the open_pr tool prepends it) -- the skip must
+        not swallow a genuinely missing role line on the app's own PR."""
+        self.cfg["bot"]["slug"] = "mason-agent"
+        row = self._run_role_row(author="app/mason-agent", is_bot=True, body_override="no role line here")
+        self.assertFalse(row["ok"], row)
+
+    def test_role_line_row_not_skipped_when_no_app_slug_configured(self):
+        """With `bot.slug` unset (the default), there's no way to tell 'some other bot' from 'the app
+        itself' -- the row must fail rather than silently pass on that unverifiable signal, matching the
+        rest of this checklist's stance (e.g. `_owner_row`) of failing, not waving through, on an
+        unresolvable case."""
+        self.assertEqual(self.cfg["bot"]["slug"], "")
+        row = self._run_role_row(author="app/dependabot", is_bot=True, body_override="bump foo from 1.0 to 1.1")
+        self.assertFalse(row["ok"], row)
+
+    def test_role_line_row_unchanged_for_human_author(self):
+        """A human (non-bot) PR author is unaffected by the bot skip -- the row still checks the body."""
+        row = self._run_role_row(author="ahuman", is_bot=False, body_override="no role line here")
+        self.assertFalse(row["ok"], row)
+        row_ok = self._run_role_row(author="ahuman", is_bot=False)  # _base_pr's body already has a role line
+        self.assertTrue(row_ok["ok"], row_ok)
 
     def test_trailer_regenerated_with_prose_in_commit_message_is_not_flagged(self):
         """Reproduces #11: a commit line like 'notices/... regenerated with the latest license list'
