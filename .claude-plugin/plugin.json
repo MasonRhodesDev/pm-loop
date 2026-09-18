@@ -12,6 +12,5 @@
     "agents",
     "cost"
   ],
-  "license": "UNLICENSED",
-  "hooks": "./hooks/hooks.json"
+  "license": "UNLICENSED"
 }
