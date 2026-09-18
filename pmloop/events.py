@@ -10,11 +10,44 @@ from . import gh, queue, config
 
 # Both record shapes in use: the MCP `review` tool ("## CLEAR — tip `sha`") and hand-posted comments ("**Verdict: CLEAR at sha**")
 VERDICT_RE = re.compile(r"(?:^##\s*|\*\*Verdict:\s*)(CLEAR|BLOCKED|VERIFIED|DISPUTED)\s*(?:[—-]+\s*tip\s*|at\s*)`?([0-9a-f]{7,40})`?", re.M | re.I)
+# The doctrine's non-closing reference form ("for #N", per the lane rules) plus every closing-keyword
+# spelling: anywhere in the body, not anchored to line start, so a linked issue is found however the
+# PR body phrases it. Kept here (rather than in premerge.py, which imports this module) so both
+# premerge._owner_row and board.build can share one extraction + one lookup without a circular import
+# (premerge -> events is fine; events -> premerge would not be).
+LINKED_ISSUE_RE = re.compile(r"\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?|for)\s*:?\s*#(\d+)", re.I)
+
+def linked_issues(body: str) -> list[int]:
+    return sorted({int(n) for n in LINKED_ISSUE_RE.findall(body)})
+
+def linked_needs_owner(repo: str, body: str, cfg: dict) -> dict:
+    """Every issue the PR body links (via linked_issues), looked up and checked for `needs-owner`.
+    Shared by premerge._owner_row (fails the merge checklist so `pm merge` refuses) and
+    board.build (labels the PR's `next` action) so the board's displayed status never disagrees
+    with what premerge will actually decide (#30) -- one regex, one API-lookup loop, two callers
+    that each interpret the result for their own presentation.
+
+    Returns {"nums": [...], "checked": [...], "flagged": [...], "errs": [...]}: `checked`/`flagged`
+    are "#N title" strings for issues that were successfully looked up (flagged: also carry
+    needs-owner); `errs` are "#N: <exception>" strings for references the API couldn't resolve --
+    an unverifiable reference is not the same as a verified 'not owner-held' (same stance
+    premerge._owner_row already takes: fail closed, never silently pass)."""
+    nums = linked_issues(body)
+    needs_owner = cfg["labels"]["needs_owner"]; flagged, checked, errs = [], [], []
+    for n in nums:
+        try:
+            j = gh.api(f"repos/{repo}/issues/{n}") or {}
+        except Exception as e:
+            errs.append(f"#{n}: {e}"); continue
+        checked.append(f"#{n} {j.get('title', '')}")
+        if needs_owner in {l.get("name") for l in j.get("labels", [])}:
+            flagged.append(f"#{n} {j.get('title', '')}")
+    return {"nums": nums, "checked": checked, "flagged": flagged, "errs": errs}
 
 def snapshot(repo: str, cfg: dict) -> dict:
     """Current observable state of a repo: open PRs (head, checks), verdicts, needs-owner issues, last main run."""
     prs = json.loads(gh.run(["pr", "list", "-R", repo, "--state", "open", "--limit", "100",
-                             "--json", "number,title,headRefOid,headRefName,baseRefName,isDraft,labels,updatedAt,mergeStateStatus"]))
+                             "--json", "number,title,body,headRefOid,headRefName,baseRefName,isDraft,labels,updatedAt,mergeStateStatus"]))
     out = {"prs": {}, "issues": {}, "main": {}}
     req = config.required_check(cfg, repo)
     for pr in prs:
@@ -23,7 +56,7 @@ def snapshot(repo: str, cfg: dict) -> dict:
         verdict = latest_verdict(repo, pr["number"])
         out["prs"][n] = {"sha": sha, "checks": state, "bad": bad[:5], "verdict": verdict, "title": pr["title"],
                          "branch": pr["headRefName"], "draft": pr["isDraft"], "labels": [l["name"] for l in pr["labels"]],
-                         "merge_state": pr.get("mergeStateStatus", ""), "updated": pr["updatedAt"]}
+                         "body": pr.get("body") or "", "merge_state": pr.get("mergeStateStatus", ""), "updated": pr["updatedAt"]}
     issues = json.loads(gh.run(["issue", "list", "-R", repo, "--label", cfg["labels"]["needs_owner"], "--state", "open", "--limit", "50", "--json", "number,title,updatedAt,comments"]))
     for i in issues:
         out["issues"][str(i["number"])] = {"title": i["title"], "updated": i["updatedAt"], "comments": len(i.get("comments") or [])}

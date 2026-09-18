@@ -15,6 +15,15 @@ def build(cfg: dict, repos: list[str] | None = None, use_state: bool = True) -> 
                 nxt = "draft: wait"
             elif cfg["labels"]["needs_owner"] in pr["labels"]:
                 nxt = "held: needs-owner"
+            elif (hold := events.linked_needs_owner(repo, pr.get("body") or "", cfg))["flagged"] or hold["errs"]:
+                # Same priority as the direct-label check above: a PR whose linked issue (`Closes #N`/
+                # `for #N`, per premerge._owner_row) is owner-held, or whose reference couldn't even be
+                # verified, must never read as further along (needs review / MERGE CANDIDATE) than a
+                # PR with its own needs-owner label would -- #30. An unverifiable reference fails closed
+                # here too, same stance premerge._owner_row takes: it's not the same as a verified
+                # "not owner-held".
+                held_num = (hold["flagged"] or hold["errs"])[0].split()[0].rstrip(":")
+                nxt = f"held: needs-owner (linked {held_num})" if hold["flagged"] else f"held: linked {held_num} could not be verified"
             elif not v:
                 nxt = "needs review (pm classify → brief reviewer)"
             elif v["verdict"] == "BLOCKED" and at_tip:

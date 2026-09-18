@@ -2,7 +2,7 @@ import json, os, tempfile, unittest, sys
 from pathlib import Path
 from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from pmloop import config, classify, events, queue, premerge, factcheck, status, ledger, brief, gh, cli
+from pmloop import config, classify, events, queue, premerge, factcheck, status, ledger, brief, gh, cli, board
 
 class T(unittest.TestCase):
     def setUp(self):
@@ -881,6 +881,94 @@ class T(unittest.TestCase):
              patch("pmloop.gh.checks_state", return_value=("success", [])) as cs:
             events.snapshot("o/r", self.cfg)
         cs.assert_called_once_with("o/r", "a"*40, "ci")
+
+    def test_snapshot_requests_and_stores_pr_body(self):
+        """#30: board.build needs the PR body to find linked issues, but snapshot's --json field
+        list never asked gh for it -- this is the failing half of the fix without it."""
+        prs = [{"number": 1, "title": "t", "body": "Closes #7", "headRefOid": "a"*40, "headRefName": "b",
+                "baseRefName": "main", "isDraft": False, "labels": [], "updatedAt": "t", "mergeStateStatus": "CLEAN"}]
+        with patch("pmloop.gh.run", side_effect=[json.dumps(prs), json.dumps([]), json.dumps([])]) as run, \
+             patch("pmloop.events.latest_verdict", return_value=None), \
+             patch("pmloop.gh.checks_state", return_value=("success", [])):
+            snap = events.snapshot("o/r", self.cfg)
+        fields = run.call_args_list[0].args[0][run.call_args_list[0].args[0].index("--json") + 1]
+        self.assertIn("body", fields.split(","))
+        self.assertEqual(snap["prs"]["1"]["body"], "Closes #7")
+
+    def test_snapshot_defaults_missing_body_to_empty_string(self):
+        prs = [{"number": 1, "title": "t", "headRefOid": "a"*40, "headRefName": "b", "baseRefName": "main",
+                "isDraft": False, "labels": [], "updatedAt": "t", "mergeStateStatus": "CLEAN"}]
+        with patch("pmloop.gh.run", side_effect=[json.dumps(prs), json.dumps([]), json.dumps([])]), \
+             patch("pmloop.events.latest_verdict", return_value=None), \
+             patch("pmloop.gh.checks_state", return_value=("success", [])):
+            snap = events.snapshot("o/r", self.cfg)
+        self.assertEqual(snap["prs"]["1"]["body"], "")
+
+    def test_linked_needs_owner_flags_when_linked_issue_carries_label(self):
+        with patch("pmloop.gh.api", return_value={"title": "Decide it", "labels": [{"name": "needs-owner"}]}):
+            r = events.linked_needs_owner("o/r", "for #7", self.cfg)
+        self.assertEqual(r["nums"], [7]); self.assertEqual(r["flagged"], ["#7 Decide it"]); self.assertFalse(r["errs"])
+
+    def test_linked_needs_owner_empty_when_no_reference(self):
+        with patch("pmloop.gh.api") as api:
+            r = events.linked_needs_owner("o/r", "no reference", self.cfg)
+        api.assert_not_called()
+        self.assertEqual(r, {"nums": [], "checked": [], "flagged": [], "errs": []})
+
+    def _board_pr(self, **overrides):
+        pr = {"sha": "a"*40, "checks": "success", "bad": [], "verdict": None, "title": "T", "branch": "b",
+              "draft": False, "labels": [], "body": "", "merge_state": "CLEAN", "updated": "t"}
+        pr.update(overrides)
+        return pr
+
+    def _build(self, pr, api_return=None, api_side_effect=None):
+        snap = {"prs": {"1": pr}, "issues": {}, "main": {}}
+        with patch("pmloop.events.snapshot", return_value=snap), \
+             patch("pmloop.gh.api", return_value=api_return, side_effect=api_side_effect):
+            b = board.build(self.cfg, repos=["o/r"], use_state=False)
+        return b["prs"][0]["next"]
+
+    def test_board_holds_when_linked_issue_carries_needs_owner(self):
+        nxt = self._build(self._board_pr(body="for #7"),
+                           api_return={"title": "Decide it", "labels": [{"name": "needs-owner"}]})
+        self.assertEqual(nxt, "held: needs-owner (linked #7)")
+
+    def test_board_merge_candidate_when_linked_issue_lacks_needs_owner(self):
+        clear = {"verdict": "CLEAR", "tip": "a"*40, "at": "t", "url": "u", "by": "r"}
+        nxt = self._build(self._board_pr(body="Closes #8", verdict=clear), api_return={"title": "T", "labels": []})
+        self.assertEqual(nxt, "MERGE CANDIDATE: pm merge")
+
+    def test_board_no_api_calls_when_body_has_no_linked_issues(self):
+        """Cost claim: a PR whose body links no issue makes zero extra `gh.api` calls at board-render
+        time (mirrors premerge's own test_owner_row_existing_tests_never_call_gh_api)."""
+        snap = {"prs": {"1": self._board_pr()}, "issues": {}, "main": {}}
+        with patch("pmloop.events.snapshot", return_value=snap), patch("pmloop.gh.api") as api:
+            board.build(self.cfg, repos=["o/r"], use_state=False)
+        api.assert_not_called()
+
+    def test_board_owner_hold_outranks_needs_review(self):
+        """Same priority as the direct needs-owner-label check: an owner-held linked issue must win
+        over 'needs review (pm classify -> brief reviewer)' (no verdict yet), not just over
+        MERGE CANDIDATE -- #30's fix inserts the check second, right after the direct-label elif."""
+        nxt = self._build(self._board_pr(body="for #7", verdict=None),
+                           api_return={"title": "Decide it", "labels": [{"name": "needs-owner"}]})
+        self.assertEqual(nxt, "held: needs-owner (linked #7)")
+
+    def test_board_holds_with_distinct_message_when_linked_issue_unverifiable(self):
+        """An unverifiable reference must fail closed on the board too, same stance
+        premerge._owner_row takes -- a lookup error is not the same as a verified 'not owner-held',
+        so it must never read as MERGE CANDIDATE either. Distinct wording from the flagged case so a
+        PM scanning the board can tell 'owner-held' from 'couldn't check'."""
+        nxt = self._build(self._board_pr(body="for #9"), api_side_effect=gh.GhError("404"))
+        self.assertEqual(nxt, "held: linked #9 could not be verified")
+
+    def test_board_own_needs_owner_label_still_outranks_everything(self):
+        """Regression guard: the pre-existing direct-label check must still fire first and must not
+        trigger an extra `gh.api` linked-issue lookup at all."""
+        with patch("pmloop.gh.api") as api:
+            nxt = self._build(self._board_pr(labels=["needs-owner"], body="for #7"))
+        api.assert_not_called()
+        self.assertEqual(nxt, "held: needs-owner")
 
     def test_role_model_effort_explicit_flags_win_over_everything(self):
         with patch.dict(os.environ, {"CLAUDE_EFFORT": "xhigh"}):
