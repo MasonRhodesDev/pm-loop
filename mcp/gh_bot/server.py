@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import time
 from pathlib import Path
@@ -222,14 +223,31 @@ def review(repo: str, number: int, role: Role, model: str, effort: Effort, verdi
 
     Always posts a COMMENT-state review, never APPROVE or REQUEST_CHANGES: this app opens the
     PRs it reviews, and GitHub 422s a REQUEST_CHANGES (or APPROVE) review from the PR's own
-    author. The verdict lives in the body ("## VERDICT — tip `sha`"), not the review `state`,
-    and the read path (pmloop.events.latest_verdict) parses that body text on every review
-    regardless of state, so a COMMENT-state review carries a BLOCKED verdict just as reliably
-    and stays on the PR's reviews list (unlike the plain-comment fallback).
+    author. The verdict word lives in the body ("## VERDICT — tip `sha`"), not the review
+    `state`, and the read path (pmloop.events.latest_verdict) parses that body text for the
+    verdict word on every review regardless of state, so a COMMENT-state review carries a
+    BLOCKED verdict just as reliably and stays on the PR's reviews list (unlike the
+    plain-comment fallback). The tip itself, once posted, is instead read back from the
+    review's own `commit_id` field — this tool validates it up front for the same reason.
+
+    Refuses (raises ValueError) if `tip` is not a plausible sha, or does not match the PR's
+    actual current head sha, so a reviewer who mistyped it finds out immediately instead of
+    `pm premerge` reporting a contradictory "reviewer CLEAR at tip: ok false" much later
+    (issue #4). Callers should paste the tip verbatim from the brief, never retype it.
     """
+    if not re.fullmatch(r"[0-9a-f]{7,40}", tip or "", re.I):
+        raise ValueError(f"tip `{tip}` is not a 7-40 char hex sha — paste it verbatim from the brief, never retype it")
     event = "COMMENT"
     text = f"## {verdict} — tip `{tip}`\n\n{body.strip()}"
     with _client() as c:
+        pr_resp = c.get(f"/repos/{repo}/pulls/{number}")
+        pr_resp.raise_for_status()
+        head = pr_resp.json()["head"]["sha"]
+        if not head.startswith(tip):
+            raise ValueError(
+                f"tip `{tip}` does not match PR #{number}'s current head `{head[:7]}` — "
+                "paste the tip verbatim from the brief, never retype it"
+            )
         r = c.post(
             f"/repos/{repo}/pulls/{number}/reviews",
             json={"event": event, "body": _with_line(text, role, model, effort, f"**verdict:** {verdict}")},

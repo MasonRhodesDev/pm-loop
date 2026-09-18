@@ -34,18 +34,27 @@ class ReviewToolTest(unittest.TestCase):
     def setUp(self):
         self.server = _load_server()
 
-    def _post_review(self, verdict: str) -> dict:
-        """Call review() with _client mocked out; return the JSON payload it tried to POST."""
+    def _fake_client(self, head: str):
+        """A _client() stand-in reporting `head` as the PR's current head sha from GET /pulls/{n}."""
         fake_response = MagicMock()
         fake_response.json.return_value = {"html_url": "https://example/1", "id": 1}
         fake_client = MagicMock()
         fake_client.__enter__.return_value = fake_client
         fake_client.__exit__.return_value = False
+        fake_client.get.return_value.json.return_value = {"head": {"sha": head}}
+        fake_client.get.return_value.raise_for_status.return_value = None
         fake_client.post.return_value = fake_response
+        return fake_client
+
+    def _post_review(self, verdict: str, tip: str = "deadbeef1", head: str = "deadbeef1" + "0" * 31) -> dict:
+        """Call review() with _client mocked out; return the JSON payload it tried to POST.
+        `head` is what GET /pulls/{n} reports as the PR's current head sha (review() must
+        check tip against this before posting)."""
+        fake_client = self._fake_client(head)
         with patch.object(self.server, "_client", return_value=fake_client):
             self.server.review(
                 repo="o/r", number=1, role="test", model="m", effort="low",
-                verdict=verdict, tip="deadbeef1", body="because reasons",
+                verdict=verdict, tip=tip, body="because reasons",
             )
         _, kwargs = fake_client.post.call_args
         return kwargs["json"]
@@ -70,6 +79,39 @@ class ReviewToolTest(unittest.TestCase):
         m = VERDICT_RE.search(payload["body"])
         self.assertIsNotNone(m)
         self.assertEqual((m.group(1), m.group(2)), ("BLOCKED", "deadbeef1"))
+
+    def test_review_refuses_tip_that_does_not_match_pr_head(self):
+        """Issue #4 suggestion 2: a reviewer that mistypes the tip argument must find out
+        immediately, not have it silently posted and fail much later in `pm premerge`.
+        On unfixed code this call succeeds and posts instead of raising."""
+        fake_client = self._fake_client(head="ffffffff" + "0" * 32)
+        with patch.object(self.server, "_client", return_value=fake_client):
+            with self.assertRaises(ValueError):
+                self.server.review(
+                    repo="o/r", number=1, role="test", model="m", effort="low",
+                    verdict="CLEAR", tip="deadbeef1", body="because reasons",
+                )
+        fake_client.post.assert_not_called()  # must refuse BEFORE posting, not after
+
+    def test_review_refuses_empty_or_non_hex_tip_before_even_checking_head(self):
+        """The refusal must be a real mismatch check, not just `head.startswith(tip)` (which is
+        trivially true for tip="" or any too-short hex prefix) — an empty/garbage tip must be
+        rejected outright, since it would otherwise post an unparseable verdict body."""
+        fake_client = self._fake_client(head="deadbeef1" + "0" * 31)
+        for bad_tip in ("", "not-hex-at-all", "zzzzzzz"):
+            with patch.object(self.server, "_client", return_value=fake_client):
+                with self.assertRaises(ValueError):
+                    self.server.review(
+                        repo="o/r", number=1, role="test", model="m", effort="low",
+                        verdict="CLEAR", tip=bad_tip, body="because reasons",
+                    )
+        fake_client.post.assert_not_called()
+
+    def test_review_accepts_tip_that_is_a_prefix_of_pr_head(self):
+        """A short (abbreviated) tip that IS a genuine prefix of the real head must still be
+        accepted — the check is a mismatch check, not an exact-length check."""
+        payload = self._post_review("CLEAR", tip="deadbeef1", head="deadbeef1" + "2" * 31)
+        self.assertEqual(payload["event"], "COMMENT")
 
 
 def _reimport_server():

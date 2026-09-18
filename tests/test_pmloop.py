@@ -2,7 +2,7 @@ import json, os, tempfile, unittest, sys
 from pathlib import Path
 from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from pmloop import config, classify, events, queue, premerge, factcheck, status, ledger
+from pmloop import config, classify, events, queue, premerge, factcheck, status, ledger, brief
 
 class T(unittest.TestCase):
     def setUp(self):
@@ -54,6 +54,47 @@ class T(unittest.TestCase):
             v = events.latest_verdict("o/r", 1)
         self.assertEqual(v["verdict"], "BLOCKED"); self.assertEqual(v["tip"], "bbbbbbb")
 
+    def test_latest_verdict_uses_review_commit_id_over_typoed_body_sha(self):
+        """Issue #4: a reviewer posted CLEAR with the review attached to the real tip
+        (commit_id on the review object matches HEAD) but retyped the SHA in the body prose
+        and got one character wrong. The review's own commit_id is authoritative — the body
+        SHA must not override it. On unfixed code this returns the typo'd body SHA
+        ('cccccc0', one char off from the real 'cccccc1')."""
+        def fake_api_list(path, **kw):
+            if "reviews" in path:
+                return [{"body": "**role:** test\n\n## CLEAR — tip `cccccc0`",  # typo: real tip is cccccc1
+                          "commit_id": "cccccc1", "submitted_at": "2026-01-03T00:00:00Z",
+                          "html_url": "u3", "user": {"login": "bot"}}]
+            if "comments" in path:
+                return []
+            return []
+        with patch("pmloop.gh.api_list", side_effect=fake_api_list):
+            v = events.latest_verdict("o/r", 1)
+        self.assertEqual(v["verdict"], "CLEAR"); self.assertEqual(v["tip"], "cccccc1")
+
+    def test_latest_verdict_falls_back_to_body_sha_when_review_has_no_commit_id(self):
+        """Defensive: if a review object somehow lacks commit_id, fall back to the body-parsed
+        SHA rather than losing the tip entirely."""
+        def fake_api_list(path, **kw):
+            if "reviews" in path:
+                return [{"body": "**role:** test\n\n## CLEAR — tip `ddddddd`",
+                          "submitted_at": "2026-01-04T00:00:00Z", "html_url": "u4", "user": {"login": "bot"}}]
+            return []
+        with patch("pmloop.gh.api_list", side_effect=fake_api_list):
+            v = events.latest_verdict("o/r", 1)
+        self.assertEqual(v["tip"], "ddddddd")
+
+    def test_reviewer_brief_tells_agent_to_paste_tip_verbatim(self):
+        """Issue #4 suggestion 2: the reviewer brief must tell the agent to paste the tip
+        verbatim rather than retype it, since a retyped SHA can silently typo one character."""
+        pr = {"number": 7, "title": "T", "body": "b", "headRefOid": "a" * 40, "baseRefName": "main",
+              "labels": [], "files": [{"path": "x.py"}], "url": "https://example/pr/7"}
+        with patch("pmloop.gh.pr_view", return_value=pr), \
+             patch("pmloop.events.latest_verdict", return_value=None):
+            text = brief.reviewer("o/r", 7, self.cfg, tier="light")
+        self.assertIn("verbatim", text.lower())
+        self.assertIn("never retype it", text.lower())
+
     def test_closing_keywords(self):
         bad = [m.group(0) for m in premerge.CLOSING_RE.finditer("fixes #12 and Closes #13, resolve #500's") if not m.group(0).startswith("Closes #")]
         self.assertEqual(bad, ["fixes #12", "resolve #500"])
@@ -66,6 +107,18 @@ class T(unittest.TestCase):
         self.assertEqual(ev[0]["kind"], "pr_opened")
         with self.assertRaises(PermissionError):
             events.from_webhook(self.cfg, {"x-hub-signature-256": "sha256=00", "x-github-event": "pull_request"}, body, "s")
+
+    def test_webhook_review_verdict_uses_commit_id_over_typoed_body_sha(self):
+        """Same defect, same file (issue #4): a pull_request_review webhook delivery carries
+        commit_id on the review object too — it must win over a hand-typed SHA in the body."""
+        import hmac, hashlib
+        payload = {"action": "submitted", "repository": {"full_name": "o/r"},
+                   "pull_request": {"number": 9},
+                   "review": {"body": "## CLEAR — tip `eeeeeee`", "commit_id": "fffffff", "html_url": "u"}}
+        body = json.dumps(payload).encode()
+        sig = "sha256=" + hmac.new(b"s", body, hashlib.sha256).hexdigest()
+        ev = events.from_webhook(self.cfg, {"x-hub-signature-256": sig, "x-github-event": "pull_request_review"}, body, "s")
+        self.assertEqual(ev[0]["kind"], "review_verdict"); self.assertEqual(ev[0]["sha"], "fffffff")
 
     def test_status_render_template_prose(self):
         f = {"number": 5, "title": "T", "url": "u", "branch": "b", "base": "main", "state": "MERGED", "merged_at": "2026-09-16T00:00:00Z", "merge_sha": "f"*40,
