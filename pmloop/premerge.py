@@ -4,6 +4,11 @@ import re, subprocess, json, time
 from . import gh, events, classify, ledger, config
 
 CLOSING_RE = re.compile(r"\b(close[sd]?|fix(e[sd])?|resolve[sd]?)\b\s*:?\s*#(\d+)", re.I)
+# The doctrine's non-closing reference form ("for #N", per the lane rules) plus every closing-keyword
+# spelling: anywhere in the body, not anchored to line start -- unlike CLOSING_RE (which only cares
+# about a *malformed closing line*), this just wants every issue number the PR body points at, however
+# it's phrased, so the owner-held check below never misses one because it landed mid-sentence.
+LINKED_ISSUE_RE = re.compile(r"\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?|for)\s*:?\s*#(\d+)", re.I)
 ROLE_RE = re.compile(r"^\*\*role:\*\*\s*\S+.*\*\*model:\*\*.*\*\*effort:\*\*", re.M)
 MERGEABLE_OK = ("CLEAN", "HAS_HOOKS", "UNSTABLE", "")
 # Negative lookbehind keeps a dotted prefix from sneaking a match in (`foo.vars.X`, `myvars.X`) and,
@@ -71,6 +76,34 @@ def _forbidden_trailer_matches(text: str, patterns: list[str]) -> list[tuple[str
                 hits.append((pat, stripped[:120]))
                 break
     return hits
+
+def _linked_issues(body: str) -> list[int]:
+    return sorted({int(n) for n in LINKED_ISSUE_RE.findall(body)})
+
+def _owner_row(repo: str, body: str, cfg: dict) -> tuple[str, bool, str]:
+    """pm-loop's doctrine is 'never decide owner questions' -- a PR whose linked issue carries
+    `needs-owner` must never read as a MERGE CANDIDATE just because its own checklist rows (review,
+    checks, mergeable) are green. References a number the API can't find (a typo, or a number that
+    turned out to be a PR not an issue) fail the row rather than silently passing -- an unverifiable
+    reference is not the same as a verified 'not owner-held', and the whole point of this row is to
+    never wave an owner question through."""
+    nums = _linked_issues(body)
+    if not nums:
+        return "linked issue not needs-owner", True, "no linked issues referenced"
+    needs_owner = cfg["labels"]["needs_owner"]; flagged, checked, errs = [], [], []
+    for n in nums:
+        try:
+            j = gh.api(f"repos/{repo}/issues/{n}") or {}
+        except Exception as e:
+            errs.append(f"#{n}: {e}"); continue
+        checked.append(f"#{n}")
+        if needs_owner in {l.get("name") for l in j.get("labels", [])}:
+            flagged.append(f"#{n} {j.get('title', '')}")
+    if errs:
+        return "linked issue not needs-owner", False, "could not verify: " + "; ".join(errs)
+    if flagged:
+        return "linked issue not needs-owner", False, "; ".join(flagged)
+    return "linked issue not needs-owner", True, f"checked: {', '.join(checked)}"
 
 def _mergeable(repo: str, number: int, cfg: dict, status: str, retry_blocked: bool = False) -> tuple[str, int]:
     """GitHub reports UNKNOWN right after the base moves and recomputes within seconds; re-fetch a bounded
@@ -151,6 +184,7 @@ def check(repo: str, number: int, cfg: dict, checkout: str | None = None) -> dic
                     " doesn't satisfy)")
     row("mergeable", mstatus in MERGEABLE_OK, detail)
     body = pr.get("body") or ""
+    row(*_owner_row(repo, body, cfg))
     row("role line in body", bool(ROLE_RE.search(body)), "")
     bad_kw = _closing_kw_violations(body, cfg["merge"]["closing_keywords_only_in"])
     row("closing keywords only as 'Closes #N'", not bad_kw, "; ".join(bad_kw[:5]))

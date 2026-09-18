@@ -85,6 +85,18 @@ def load(repo_dir: str | os.PathLike | None = None) -> dict:
     cfg["bot"]["key_path"] = str(Path(cfg["bot"]["key_path"]).expanduser())
     return cfg
 
+def resolve_repo(cfg: dict, repo: str) -> str:
+    """A bare short name ("diarch") has no '/', so `gh` rejects it outright ("expected the
+    [HOST/]OWNER/REPO format"). Resolve it against `cfg["repos"]` (full "OWNER/REPO" strings) by
+    matching the trailing path segment after the last '/'. Exactly one match -> use the full name;
+    already-qualified, zero matches, or an ambiguous match (two configured repos share a short name)
+    -> leave it untouched, so a genuine typo still surfaces as `gh`'s own format error instead of
+    being silently resolved to the wrong repo."""
+    if "/" in repo:
+        return repo
+    matches = [r for r in cfg.get("repos", []) if r.split("/")[-1] == repo]
+    return matches[0] if len(matches) == 1 else repo
+
 def required_check(cfg: dict, repo: str) -> str:
     """`merge.required_check`, resolved for one repo: either a single check name shared by every repo
     (backward-compatible string, the historical shape) or a `{repo: check_name}` map, so a user-level
