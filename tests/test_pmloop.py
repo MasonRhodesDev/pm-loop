@@ -426,6 +426,89 @@ class T(unittest.TestCase):
         row = self._run_secvar_no_api([], body="\n\nsee `${{ secrets.QUOTED }}` in the old workflow")
         self.assertTrue(row["ok"], row); self.assertIn("none referenced", row["detail"])
 
+    def _run_trailer_row(self, body="", commits=None, method="squash"):
+        tip = "a" * 40
+        pr = self._base_pr(tip)
+        pr["body"] = pr["body"] + body
+        pr["commits"] = commits or []
+        self.cfg["merge"]["method"] = method
+        with patch("pmloop.gh.pr_view", return_value=pr), \
+             patch("pmloop.gh.run", return_value=tip + "\n"), \
+             patch("pmloop.classify.for_pr", return_value={"tier": "none", "reason": "t"}), \
+             patch("pmloop.events.latest_verdict", return_value=None), \
+             patch("pmloop.gh.pr_files", return_value=[]), \
+             patch("pmloop.gh.checks_state", return_value=("success", [])):
+            rep = premerge.check("o/r", 42, self.cfg)
+        return next(r for r in rep["rows"] if r["check"].startswith("no forbidden trailers"))
+
+    def test_trailer_regenerated_with_prose_in_commit_message_is_not_flagged(self):
+        """Reproduces #11: a commit line like 'notices/... regenerated with the latest license list'
+        must not trip the forbidden 'Generated with' footer pattern -- it's prose, not a footer."""
+        commits = [{"messageHeadline": "notices/THIRD-PARTY-NOTICES.txt regenerated with the latest license list",
+                    "messageBody": ""}]
+        row = self._run_trailer_row(commits=commits, method="merge")
+        self.assertTrue(row["ok"], row)
+
+    def test_trailer_bare_mention_mid_sentence_in_body_is_not_flagged(self):
+        """A PR body that talks about the checker (e.g. documenting this very fix) and mentions
+        'generated with' or 'co-authored-by' mid-sentence, not as its own line, must not be flagged --
+        otherwise this fix's own PR body would trip the check it introduces (the #6 self-referential trap)."""
+        body_extra = ("\n\nThis fixes premerge so text that merely contains 'generated with' as part of a "
+                      "longer sentence, such as when something was regenerated with a tool, no longer matches.")
+        row = self._run_trailer_row(body=body_extra)
+        self.assertTrue(row["ok"], row)
+
+    def test_trailer_backticked_mid_sentence_mention_is_not_flagged(self):
+        """Same trap, phrased as an inline-code example: a line that only starts with 'The fix ...' and
+        merely mentions the pattern in backticks mid-sentence is not a real footer."""
+        body_extra = "\n\nThe fix checks for a line starting with `Co-Authored-By:` at line start."
+        row = self._run_trailer_row(body=body_extra)
+        self.assertTrue(row["ok"], row)
+
+    def test_trailer_detail_shows_matched_line_not_just_pattern_name(self):
+        """The row detail must name the actual offending line, not just which pattern matched, so a
+        false positive is obvious to a human reading it."""
+        body_extra = "\n\nCo-Authored-By: Claude <noreply@example.com>"
+        row = self._run_trailer_row(body=body_extra)
+        self.assertFalse(row["ok"])
+        self.assertIn("Co-Authored-By: Claude <noreply@example.com>", row["detail"])
+
+    def test_trailer_squash_merge_does_not_scan_commit_messages_and_says_so(self):
+        """A squash merge uses pm merge's own composed subject/body, so a forbidden trailer sitting only
+        in a branch commit message can't leak into the merge -- it must not be scanned, and the row detail
+        must say so."""
+        commits = [{"messageHeadline": "x", "messageBody": "Co-Authored-By: Claude <noreply@example.com>"}]
+        row = self._run_trailer_row(commits=commits, method="squash")
+        self.assertTrue(row["ok"], row)
+        self.assertIn("commit", row["detail"].lower())
+
+    def test_trailer_nonsquash_merge_scans_commit_messages_and_says_so(self):
+        """merge_method != squash: branch commit messages become part of the real merge, so they must be
+        scanned, the offending line reported, and the detail must say commit messages were checked."""
+        commits = [{"messageHeadline": "x", "messageBody": "Co-Authored-By: Claude <noreply@example.com>"}]
+        row = self._run_trailer_row(commits=commits, method="merge")
+        self.assertFalse(row["ok"])
+        self.assertIn("Co-Authored-By: Claude <noreply@example.com>", row["detail"])
+        self.assertIn("commit", row["detail"].lower())
+
+    def test_trailer_line_start_co_authored_by_is_flagged(self):
+        row = self._run_trailer_row(body="\n\nCo-Authored-By: Claude <noreply@example.com>")
+        self.assertFalse(row["ok"])
+
+    def test_trailer_lowercase_co_authored_by_is_still_flagged(self):
+        """Git trailer keys are case-insensitive; keep that behavior."""
+        row = self._run_trailer_row(body="\n\nco-authored-by: someone <x@example.com>")
+        self.assertFalse(row["ok"])
+
+    def test_trailer_emoji_generated_with_footer_is_flagged(self):
+        row = self._run_trailer_row(body="\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)")
+        self.assertFalse(row["ok"])
+        self.assertIn("Generated with", row["detail"])
+
+    def test_trailer_bare_generated_with_footer_is_flagged(self):
+        row = self._run_trailer_row(body="\n\nGenerated with [Claude Code](https://claude.com/claude-code)")
+        self.assertFalse(row["ok"])
+
     def test_merge_refuses_without_force_when_premerge_not_ok(self):
         fail_rep = {"repo": "o/r", "number": 7, "tip": "c" * 40, "title": "T", "ok": False,
                     "rows": [{"check": "checks green", "ok": False, "detail": "pending"}]}

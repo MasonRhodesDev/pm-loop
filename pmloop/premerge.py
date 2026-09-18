@@ -31,6 +31,26 @@ def _expr_secvar_refs(text: str) -> list[tuple[str, str]]:
     prose = CODE_SPAN_RE.sub("", text)
     return [ref for block in EXPR_BLOCK_RE.findall(prose) for ref in SECVAR_RE.findall(block)]
 
+def _forbidden_trailer_matches(text: str, patterns: list[str]) -> list[tuple[str, str]]:
+    """Real trailers/footers appear as their own line: a git trailer is `Key: value` at line start
+    (trailer convention), and the Claude Code footer is `Generated with [Claude Code]` at line start,
+    optionally preceded by the (robot emoji) prefix. Anchoring to line-start (after stripping leading
+    whitespace and an optional emoji prefix) keeps prose that merely *contains* the phrase -- "regenerated
+    with", "co-authored the design" mid-sentence, or a backticked example inside a longer sentence -- from
+    matching: only a line that actually *begins* with the forbidden text counts. Returns (pattern, line)
+    pairs so the row detail can show the real offending line, not just which pattern fired."""
+    hits = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        candidate = stripped[1:].lstrip() if stripped.startswith("\U0001F916") else stripped
+        for pat in patterns:
+            if candidate.lower().startswith(pat.lower()):
+                hits.append((pat, stripped[:120]))
+                break
+    return hits
+
 def _mergeable(repo: str, number: int, cfg: dict, status: str, retry_blocked: bool = False) -> tuple[str, int]:
     """GitHub reports UNKNOWN right after the base moves and recomputes within seconds; re-fetch a bounded
     number of times (never a hard fail, never treated as a pass) before deciding. It can also report the
@@ -114,9 +134,15 @@ def check(repo: str, number: int, cfg: dict, checkout: str | None = None) -> dic
     bad_kw = [m.group(0) for m in CLOSING_RE.finditer(body) if not m.group(0).startswith(cfg["merge"]["closing_keywords_only_in"])]
     row("closing keywords only as 'Closes #N'", not bad_kw, "; ".join(bad_kw[:5]))
     # A squash merge writes its own message (pm merge composes it), so branch commits only matter for merge/rebase.
-    msgs = "" if cfg["merge"]["method"] == "squash" else "\n".join(c.get("messageHeadline", "") + "\n" + c.get("messageBody", "") for c in pr.get("commits", []))
-    trailers = [t for t in cfg["merge"]["forbid_trailers"] if t.lower() in (msgs + "\n" + body).lower()]
-    row("no forbidden trailers/footers in PR body" + ("" if cfg["merge"]["method"] == "squash" else "/commits"), not trailers, ", ".join(trailers))
+    checks_commits = cfg["merge"]["method"] != "squash"
+    hits = _forbidden_trailer_matches(body, cfg["merge"]["forbid_trailers"])
+    if checks_commits:
+        msgs = "\n".join(c.get("messageHeadline", "") + "\n" + c.get("messageBody", "") for c in pr.get("commits", []))
+        hits += _forbidden_trailer_matches(msgs, cfg["merge"]["forbid_trailers"])
+    scope = "checked body + commit messages" if checks_commits else \
+        "checked body only, not commit messages (squash merge: pm merge composes its own commit message, so branch commits can't leak into it)"
+    detail = scope + ("; matched: " + "; ".join(f'{pat} → "{line}"' for pat, line in hits) if hits else "; no matches")
+    row("no forbidden trailers/footers in PR body" + ("/commits" if checks_commits else ""), not hits, detail)
     row(*_secvar_row(repo, number, body))
     ok = all(r["ok"] for r in rows)
     return {"repo": repo, "number": number, "tip": tip, "title": pr["title"], "ok": ok, "rows": rows}
