@@ -316,8 +316,8 @@ class T(unittest.TestCase):
         row = self._run_secvar_no_api(files)
         self.assertTrue(row["ok"], row); self.assertIn("none referenced", row["detail"])
 
-    def _run_secvar_no_api(self, files):
-        pr = self._secvar_pr()
+    def _run_secvar_no_api(self, files, body=""):
+        pr = self._secvar_pr(body)
         with patch("pmloop.gh.pr_view", return_value=pr), \
              patch("pmloop.gh.run", return_value="a" * 40 + "\n"), \
              patch("pmloop.classify.for_pr", return_value={"tier": "none", "reason": "t"}), \
@@ -349,6 +349,29 @@ class T(unittest.TestCase):
         """Issue asks to diff-scan .github/**, not to drop the pre-existing body scan."""
         row = self._run_secvar([], body="\n\nreads ${{ secrets.BODY_ONLY }}")
         self.assertFalse(row["ok"]); self.assertIn("secrets.BODY_ONLY", row["detail"])
+
+    def test_secvar_bare_mention_in_body_prose_is_not_flagged(self):
+        """A PR body that merely *talks about* a secret name (documenting a bug, quoting a test, an
+        example like "secrets.A || secrets.B", or quoting an actual `${{ }}` snippet in backticks as an
+        example) must not be treated as a real reference. Regression for the false positive #24 itself
+        hit: its own body prose named fixture/example secrets, some inline-code-quoted, that don't exist."""
+        body_extra = ("\n\nreads secrets.X_KEY, secrets.X_SECRET and vars.X\n"
+                      "test_secvar_removed_line_is_not_flagged -- `-  ${{ secrets.OLD }}`\n"
+                      "e.g. `${{ secrets.A || secrets.B }}`")
+        row = self._run_secvar_no_api([], body=body_extra)
+        self.assertTrue(row["ok"], row); self.assertIn("none referenced", row["detail"])
+
+    def test_secvar_real_expression_in_body_is_still_flagged(self):
+        """A PR body containing an actual `${{ secrets.FOO }}` expression written directly into the
+        prose (not quoted as markdown code) is still a real reference and must still be checked."""
+        row = self._run_secvar([], body="\n\nthe new step adds ${{ secrets.FOO }} to the job env")
+        self.assertFalse(row["ok"]); self.assertIn("secrets.FOO", row["detail"])
+
+    def test_secvar_code_quoted_expression_in_body_is_not_flagged(self):
+        """The same expression, but quoted as inline markdown code (as a PR description would when
+        citing an existing line rather than declaring a new one), is not a reference."""
+        row = self._run_secvar_no_api([], body="\n\nsee `${{ secrets.QUOTED }}` in the old workflow")
+        self.assertTrue(row["ok"], row); self.assertIn("none referenced", row["detail"])
 
     def test_merge_refuses_without_force_when_premerge_not_ok(self):
         fail_rep = {"repo": "o/r", "number": 7, "tip": "c" * 40, "title": "T", "ok": False,

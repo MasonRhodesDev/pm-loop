@@ -10,7 +10,26 @@ MERGEABLE_OK = ("CLEAN", "HAS_HOOKS", "UNSTABLE", "")
 # together with requiring the literal `secrets.`/`vars.` prefix, means `github.*` context refs
 # (`github.token`, `github.repository`, ...) never match at all -- they aren't secrets/vars.
 SECVAR_RE = re.compile(r"(?<![\w.])(secrets|vars)\.([A-Za-z0-9_]+)")
+# The PR body is free-form prose, not workflow YAML -- a description that merely *mentions* a secret
+# name (documenting a bug, quoting a test name, "secrets.A || secrets.B" as an example) must not be
+# treated as a real reference. Only the actual GitHub Actions expression form `${{ secrets.NAME }}`
+# counts there (this is also the original, pre-#6 regex: `\$\{\{\s*(?:secrets|vars)\.([A-Z0-9_]+)\s*\}\}`),
+# so we pull out `${{ ... }}` blocks and only scan inside those. Markdown code formatting -- an inline
+# `` `...` `` span or a ``` fenced block -- is the PR author quoting something (an existing diff line, a
+# test assertion, an example) rather than declaring a reference the PR itself introduces, so it's
+# stripped first; the authoritative "this PR reads secret X" signal is the .github/** diff scan below,
+# and the body scan is only a fallback for a raw `${{ }}` written directly into the description. That
+# diff scan is real YAML/workflow content, so it can keep matching the bare `secrets.NAME`/`vars.NAME`
+# form without requiring the `${{ }}` wrapper.
+EXPR_BLOCK_RE = re.compile(r"\$\{\{(.*?)\}\}", re.S)
+CODE_SPAN_RE = re.compile(r"```.*?```|~~~.*?~~~|`[^`\n]*`", re.S)
 EXEMPT_SECRETS = {"GITHUB_TOKEN"}
+
+def _expr_secvar_refs(text: str) -> list[tuple[str, str]]:
+    """secrets.X/vars.X references, but only inside an actual `${{ ... }}` expression and outside any
+    markdown code quoting -- see SECVAR_RE and the comment above CODE_SPAN_RE."""
+    prose = CODE_SPAN_RE.sub("", text)
+    return [ref for block in EXPR_BLOCK_RE.findall(prose) for ref in SECVAR_RE.findall(block)]
 
 def _mergeable(repo: str, number: int, cfg: dict, status: str, retry_blocked: bool = False) -> tuple[str, int]:
     """GitHub reports UNKNOWN right after the base moves and recomputes within seconds; re-fetch a bounded
@@ -35,13 +54,15 @@ def _added_lines(patch: str) -> str:
     return "\n".join(l[1:] for l in patch.splitlines() if l.startswith("+") and not l.startswith("+++"))
 
 def _secvar_row(repo: str, number: int, body: str) -> tuple[str, bool, str]:
-    """The 'secret must exist before a PR that reads it merges' row (#6): scans both the PR body and
-    every added line under `.github/**` in the PR's diff for `secrets.X`/`vars.X` references, then
-    checks each name against the repo's, org's, and every environment's configured secrets/variables.
-    `GITHUB_TOKEN` and any `github.*` context reference are exempt -- they aren't secrets/vars at all."""
+    """The 'secret must exist before a PR that reads it merges' row (#6): scans both the PR body (only
+    real `${{ secrets.X }}`/`${{ vars.X }}` expressions, not bare prose mentions -- see EXPR_BLOCK_RE)
+    and every added line under `.github/**` in the PR's diff (bare `secrets.X`/`vars.X` too, since that's
+    actual workflow content) for references, then checks each name against the repo's, org's, and every
+    environment's configured secrets/variables. `GITHUB_TOKEN` and any `github.*` context reference are
+    exempt -- they aren't secrets/vars at all."""
     gh_diff = "\n".join(_added_lines(f.get("patch") or "") for f in gh.pr_files(repo, number)
                          if f.get("filename", "").startswith(".github/"))
-    refs = SECVAR_RE.findall(gh_diff) + SECVAR_RE.findall(body)
+    refs = SECVAR_RE.findall(gh_diff) + _expr_secvar_refs(body)
     sec_refs = sorted({n.upper() for kind, n in refs if kind == "secrets"} - EXEMPT_SECRETS)
     var_refs = sorted({n.upper() for kind, n in refs if kind == "vars"})
     if not sec_refs and not var_refs:
