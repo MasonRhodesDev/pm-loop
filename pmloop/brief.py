@@ -66,6 +66,7 @@ def reviewer(repo: str, number: int, cfg: dict, tier: str | None = None, checkou
 {prior}
 ## Deliverable
 Post exactly one verdict with the MCP `review` tool: verdict CLEAR or BLOCKED, tip `{pr['headRefOid']}`, body = numbered findings with file:line and the command that demonstrates each. A finding without a reproduction is a note, not a block.
+Paste that tip verbatim from this brief — never retype it. The `review` tool refuses a tip that doesn't match the PR's actual current head, so a typo is caught immediately instead of surfacing later as a contradictory `pm premerge` result.
 Files: {len(pr['files'])}. PR: {pr['url']}
 """
 

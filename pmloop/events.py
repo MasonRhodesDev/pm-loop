@@ -39,7 +39,12 @@ def latest_verdict(repo: str, number: int) -> dict | None:
         for rv in gh.api_list(f"repos/{repo}/pulls/{number}/reviews?per_page=100"):
             m = VERDICT_RE.search(rv.get("body") or "")
             if m and (best is None or rv["submitted_at"] > best["at"]):
-                best = {"verdict": m.group(1), "tip": m.group(2), "at": rv["submitted_at"], "url": rv["html_url"], "by": rv["user"]["login"]}
+                # The review's own commit_id (the commit it was actually submitted against) is
+                # authoritative for the tip — a hand-typed SHA in the body prose can have a typo
+                # (issue #4) even when the review is correctly attached to HEAD. Fall back to the
+                # body-parsed SHA only if commit_id is missing.
+                tip = rv.get("commit_id") or m.group(2)
+                best = {"verdict": m.group(1), "tip": tip, "at": rv["submitted_at"], "url": rv["html_url"], "by": rv["user"]["login"]}
         for c in gh.api_list(f"repos/{repo}/issues/{number}/comments?per_page=100"):
             m = VERDICT_RE.search(c.get("body") or "")
             if m and (best is None or c["created_at"] > best["at"]):
@@ -113,7 +118,12 @@ def from_webhook(cfg: dict, headers: dict, body: bytes, secret: str) -> list[dic
         m = VERDICT_RE.search(body_txt)
         num = (p.get("pull_request") or p.get("issue") or {}).get("number")
         if m and num:
-            ev.append({"kind": "review_verdict", "repo": repo, "number": num, "sha": m.group(2), "verdict": m.group(1), "url": (p.get("review") or p.get("comment"))["html_url"]})
+            # A pull_request_review payload's review object carries commit_id (the commit it was
+            # actually submitted against) same as the REST reviews list — authoritative over a
+            # hand-typed SHA in the body. issue_comment has no such field, so its comment stays
+            # prose-parsed only.
+            sha = (p.get("review") or {}).get("commit_id") or m.group(2)
+            ev.append({"kind": "review_verdict", "repo": repo, "number": num, "sha": sha, "verdict": m.group(1), "url": (p.get("review") or p.get("comment"))["html_url"]})
         elif num and p.get("issue") and p["sender"]["type"] != "Bot":
             ev.append({"kind": "comment", "repo": repo, "number": num, "title": p["issue"]["title"]})
     elif ev_name == "issues" and p["action"] == "labeled" and p["label"]["name"] == cfg["labels"]["needs_owner"]:
