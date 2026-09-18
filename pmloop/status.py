@@ -6,7 +6,7 @@ in the record, so `pm factcheck` can verify the entry mechanically.
 """
 from __future__ import annotations
 import json, re, subprocess, time
-from . import gh, llm
+from . import gh, llm, factcheck
 
 def facts(repo: str, number: int, checkout: str | None = None) -> dict:
     pr = gh.pr_view(repo, number, "number,title,body,headRefOid,headRefName,baseRefName,state,mergedAt,mergeCommit,url,files,closingIssuesReferences,author,labels,additions,deletions")
@@ -29,11 +29,27 @@ def facts(repo: str, number: int, checkout: str | None = None) -> dict:
         p = subprocess.run(["git", "-C", checkout, "show", "--numstat", "--format=%H %s", f["merge_sha"]], capture_output=True, text=True)
         if p.returncode == 0:
             f["numstat"] = p.stdout.strip().splitlines()[:60]
+    if f["merge_sha"]:
+        # A merged PR's title can be edited afterwards (a rework retitled in prose only, still naming a
+        # withdrawn design — seen once). The squash commit's subject is fixed at merge time by `pm merge`
+        # and is what actually landed, so it is the more trustworthy heading. Fetched from the GitHub API
+        # (not the local checkout) so this holds even when the checkout hasn't fetched the merge yet.
+        try:
+            msg = gh.run(["api", f"repos/{repo}/commits/{f['merge_sha']}", "--jq", ".commit.message"])
+            subject = re.sub(r"\s*\(#\d+\)\s*$", "", (msg.strip().splitlines() or [""])[0])
+            if subject:
+                f["squash_subject"] = subject
+        except gh.GhError:
+            pass
     return f
+
+def _forbidden(text: str, cfg: dict) -> str | None:
+    return next((pat for pat in cfg["status"]["forbid_patterns"] if pat in text), None)
 
 def render(f: dict, cfg: dict) -> str:
     when = f["merged_at"] or f["checked_at"]
-    lines = [f"### {when} — #{f['number']} {f['title']}", ""]
+    heading = f.get("squash_subject") or f["title"]
+    lines = [f"### {when} — #{f['number']} {heading}", ""]
     lines.append(f"- **PR:** {f['url']} · branch `{f['branch']}` → `{f['base']}` · state {f['state']}")
     if f["merge_sha"]:
         lines.append(f"- **merged:** `{f['merge_sha'][:7]}` at {f['merged_at']}")
@@ -64,7 +80,25 @@ def summarize(f: dict, cfg: dict) -> str:
 
 def entry(repo: str, number: int, cfg: dict, checkout: str | None = None) -> str:
     text = render(facts(repo, number, checkout), cfg)
-    for pat in cfg["status"]["forbid_patterns"]:
-        if pat in text:
-            raise ValueError(f"entry contains forbidden pattern {pat!r}")
+    bad = _forbidden(text, cfg)
+    if bad:
+        raise ValueError(f"entry contains forbidden pattern {bad!r}")
     return text
+
+def record(repo: str, number: int, cfg: dict, checkout: str | None, role: str, model: str, effort: str, dry: bool = False) -> dict:
+    """status-entry + factcheck + comment in one step: the record goes with the change (a comment on the
+    merged PR) instead of a separate STATUS-only PR. Refuses to post if the PR is not MERGED, if the
+    entry carries a forbidden pattern, or if factcheck does not report ok."""
+    f = facts(repo, number, checkout)
+    if f["state"] != "MERGED":
+        return {"ok": False, "posted": False, "reason": f"PR state is {f['state']}, not MERGED"}
+    text = render(f, cfg)
+    bad = _forbidden(text, cfg)
+    if bad:
+        return {"ok": False, "posted": False, "reason": f"entry contains forbidden pattern {bad!r}"}
+    fc = factcheck.check(text, repo, cfg)
+    if not fc["ok"] or dry:
+        return {"ok": fc["ok"], "posted": False, "factcheck": fc, "entry": text}
+    body = gh.role_line(role, model, effort) + "\n\n" + text
+    j = gh.api(f"repos/{repo}/issues/{number}/comments", method="POST", token=gh.app_token(cfg), fields={"body": body})
+    return {"ok": True, "posted": True, "url": j["html_url"], "id": j["id"], "factcheck": fc, "entry": text}

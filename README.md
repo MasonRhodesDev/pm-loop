@@ -2,7 +2,7 @@
 
 Event-driven, script-first PM loop for GitHub repos worked by Claude Code agents. A Claude Code plugin.
 
-- `pm` CLI: poll/queue, board, classify, review-needed, premerge, merge, status-entry, factcheck, watch, brief, run, ledger, llm, git-env
+- `pm` CLI: poll/queue, board, classify, review-needed, premerge, merge, status-entry, record, factcheck, watch, brief, run, ledger, llm, git-env
 - skills: `/pm-loop` (one interactive tick), `/pm-loop-board`, `/pm-loop-tune`
 - agents: `dev-lane`, `reviewer-light`, `reviewer-adversarial`, `spike` (model/effort/turn caps; no nested agents)
 - hooks: lane guard (no sub-agents, no background jobs, no CI polling), per-role tool-call cap, stall check

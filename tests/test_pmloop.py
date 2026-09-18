@@ -72,6 +72,72 @@ class T(unittest.TestCase):
              "head": "e"*40, "files": 2, "additions": 3, "deletions": 1, "closes": [4], "labels": [], "paths": ["engine/a.go", "engine/b.go"], "checked_at": "now", "role": None, "checks": {"sha": "f"*40, "state": "success", "bad": []}}
         txt = status.render(f, self.cfg); self.assertIn("#5 changed 2 file(s) under engine for #4.", txt); self.assertIn("**merged:** `fffffff`", txt)
 
+    def test_status_render_uses_squash_subject_over_stale_title(self):
+        """A PR retitled in prose after a rework still names the withdrawn design in `title`; the
+        squash commit subject (fixed at merge time) is what the heading should show instead (#13)."""
+        f = {"number": 8, "title": "Add the old widget design", "url": "u", "branch": "b", "base": "main",
+             "state": "MERGED", "merged_at": "2026-09-17T00:00:00Z", "merge_sha": "a" * 40, "head": "a" * 40,
+             "files": 1, "additions": 1, "deletions": 1, "closes": [], "labels": [], "paths": ["x.py"],
+             "checked_at": "now", "role": None, "checks": {"sha": "a" * 40, "state": "success", "bad": []},
+             "squash_subject": "Rework the widget entirely"}
+        txt = status.render(f, self.cfg)
+        self.assertEqual(txt.splitlines()[0], "### 2026-09-17T00:00:00Z — #8 Rework the widget entirely")
+        self.assertNotIn("Add the old widget design", txt)
+
+    def test_status_facts_takes_squash_subject_from_merge_commit_api_stripping_pr_suffix(self):
+        """The subject comes from the GitHub API (not the local checkout, which may not have fetched the
+        merge yet) and drops the trailing ` (#N)` that `pm merge` appends when no --subject is given."""
+        pr = {"number": 8, "title": "Add the old widget design", "url": "u", "headRefOid": "a" * 40, "headRefName": "b",
+              "baseRefName": "main", "state": "MERGED", "mergedAt": "t", "mergeCommit": {"oid": "a" * 40},
+              "files": [], "closingIssuesReferences": [], "labels": [], "author": {}, "additions": 0, "deletions": 0, "body": ""}
+        def fake_run(args, **kw):
+            if "commits/" in args[1]:
+                return "Rework the widget entirely (#8)\n\nlonger commit body\n"
+            return "a" * 40 + "\n"
+        with patch("pmloop.gh.pr_view", return_value=pr), patch("pmloop.gh.check_runs", return_value=[]), \
+             patch("pmloop.gh.checks_state", return_value=("success", [])), \
+             patch("pmloop.gh.run", side_effect=fake_run):
+            f = status.facts("o/r", 8)
+        self.assertEqual(f["squash_subject"], "Rework the widget entirely")
+
+    def _merged_pr_facts(self):
+        return {"number": 5, "title": "T", "url": "u", "branch": "b", "base": "main", "state": "MERGED",
+                "merged_at": "2026-09-18T00:00:00Z", "merge_sha": "f" * 40, "head": "e" * 40, "files": 2,
+                "additions": 3, "deletions": 1, "closes": [4], "labels": [], "paths": ["engine/a.go"],
+                "checked_at": "now", "role": None, "checks": {"sha": "f" * 40, "state": "success", "bad": []}}
+
+    def test_record_refuses_to_post_when_pr_is_not_merged(self):
+        """`pm record` posts a record on the MERGED PR, never on an open one."""
+        with patch("pmloop.status.facts", return_value={"state": "OPEN"}), patch("pmloop.gh.api") as api:
+            r = status.record("o/r", 5, self.cfg, None, "docs", "sonnet", "medium")
+        self.assertFalse(r["ok"]); self.assertFalse(r["posted"]); api.assert_not_called()
+
+    def test_record_refuses_to_post_when_factcheck_fails(self):
+        with patch("pmloop.status.facts", return_value=self._merged_pr_facts()), \
+             patch("pmloop.factcheck.check", return_value={"ok": False, "checked": 1,
+                    "findings": [{"kind": "ref", "value": "#5", "ok": False, "detail": "not found"}]}), \
+             patch("pmloop.gh.api") as api:
+            r = status.record("o/r", 5, self.cfg, None, "docs", "sonnet", "medium")
+        self.assertFalse(r["ok"]); self.assertFalse(r["posted"]); api.assert_not_called()
+
+    def test_record_posts_fact_checked_comment_with_role_line_when_ok(self):
+        with patch("pmloop.status.facts", return_value=self._merged_pr_facts()), \
+             patch("pmloop.factcheck.check", return_value={"ok": True, "checked": 0, "findings": []}), \
+             patch("pmloop.gh.app_token", return_value="tok"), \
+             patch("pmloop.gh.api", return_value={"html_url": "u2", "id": 99}) as api:
+            r = status.record("o/r", 5, self.cfg, None, "docs", "sonnet", "medium")
+        self.assertTrue(r["ok"]); self.assertTrue(r["posted"]); self.assertEqual(r["url"], "u2")
+        args, kwargs = api.call_args
+        self.assertEqual(args[0], "repos/o/r/issues/5/comments")
+        self.assertTrue(kwargs["fields"]["body"].startswith("**role:** docs"))
+
+    def test_record_dry_run_checks_but_does_not_post(self):
+        with patch("pmloop.status.facts", return_value=self._merged_pr_facts()), \
+             patch("pmloop.factcheck.check", return_value={"ok": True, "checked": 0, "findings": []}), \
+             patch("pmloop.gh.api") as api:
+            r = status.record("o/r", 5, self.cfg, None, "docs", "sonnet", "medium", dry=True)
+        self.assertTrue(r["ok"]); self.assertFalse(r["posted"]); api.assert_not_called()
+
     def test_factcheck_quotes_only(self):
         r = factcheck.check('he said "exactly these words here"', "o/r", self.cfg, ["... exactly these words here ..."])
         self.assertTrue(r["ok"]); r = factcheck.check('"not in the sources at all"', "o/r", self.cfg, ["x"]); self.assertFalse(r["ok"])
