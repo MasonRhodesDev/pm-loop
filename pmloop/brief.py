@@ -76,7 +76,7 @@ def pm(cfg: dict, board_md: str, status_tail: str, extra: str = "", headless: bo
 
 ## Doctrine
 - Merge only when `pm premerge` reports ok (reviewer {cfg['review']['required_verdict']} at tip AND checks green). Never merge on your own judgment. Use `pm merge`.
-- Never poll or wait. If nothing is actionable, say so and stop; the next tick comes from events.
+- Never poll or self-schedule inside a tick. If nothing is actionable, say so and stop — do not wait for anything to change, and do not invent a wakeup mechanism. Nothing here delivers the next tick automatically: unattended, that's `deploy/systemd/pm-loop.timer` invoking `pm run` on a fixed cadence; interactively, that's the operator re-running this skill (by hand, or on a cadence via Claude Code's own `/loop`, e.g. `/loop 10m /pm-loop`). The webhook receiver (`pm events serve`) only keeps the queue fresh between runs — it never triggers a tick by itself.
 {"- MERGES ARE IN DRY-RUN MODE this tick: `pm merge` only reports the payload; list what would have merged." if cfg["merge"].get("dry_run") else ""}
 - Reviews: `pm classify <repo> <pr>` decides the tier; `pm brief reviewer <repo> <pr>` builds the brief; spawn a FRESH reviewer agent (`reviewer-light` / `reviewer-adversarial`) — never resume one.
 - Dev work: `pm brief dev <repo> <issue>`; a BLOCKED PR: `pm brief fix <repo> <pr>` (fixes land on the PR's own branch, never a new PR).

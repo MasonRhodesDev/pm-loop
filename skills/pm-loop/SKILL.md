@@ -13,7 +13,7 @@ Arguments: `$ARGUMENTS` (optional repos to restrict to; `--force` runs even with
 ## Effective config
 !`"${CLAUDE_PLUGIN_ROOT}"/bin/pm config roles`
 
-## Board (from the poller's last snapshot; run `pm events poll` first if it looks stale)
+## Board (this tick already polled GitHub just now, below, so it never trusts a stale snapshot)
 !`"${CLAUDE_PLUGIN_ROOT}"/bin/pm events poll >/dev/null 2>&1; "${CLAUDE_PLUGIN_ROOT}"/bin/pm board`
 
 ## Doctrine for this tick
@@ -26,5 +26,5 @@ Arguments: `$ARGUMENTS` (optional repos to restrict to; `--force` runs even with
 - After each merge: `pm record <repo> <pr>` — entry, factcheck, and a comment on the merged PR in one step; it refuses to post if factcheck fails. The record goes with the change; no STATUS PR is opened whose only change is a record.
 - If a gh-bot tool errors, use the equivalent `mason-agent` tool or `gh-agent` on the CLI instead — never fall back to plain `gh` for a write.
 - Owner decisions: open/label `needs-owner` with a numbered CTA. Then stop.
-- When nothing is actionable, say "nothing actionable" and stop. Do not wait, poll, or schedule.
+- When nothing is actionable, say "nothing actionable" and stop. The poll above already ran once for this tick — never poll again, wait, or self-schedule; the next tick is the operator re-running this skill (by hand, or via Claude Code's own `/loop`) or the timer, if installed.
 - Finish with `pm events clear` so processed events are not replayed.

@@ -2,7 +2,7 @@ import json, os, tempfile, unittest, sys
 from pathlib import Path
 from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from pmloop import config, classify, events, queue, premerge, factcheck, status, ledger, brief, gh, cli, board
+from pmloop import config, classify, events, queue, premerge, factcheck, status, ledger, brief, gh, cli, board, run
 
 class T(unittest.TestCase):
     def setUp(self):
@@ -58,6 +58,33 @@ class T(unittest.TestCase):
     def test_queue_roundtrip(self):
         queue.append(self.cfg, [{"kind": "pr_opened", "repo": "o/r", "number": 1, "sha": "abc1234"}])
         p = queue.pending(self.cfg); self.assertEqual(len(p), 1)
+
+    def test_tick_polls_before_checking_the_queue_is_empty(self):
+        """run.tick() must poll itself -- a caller that skipped its own `pm events poll` (or only
+        runs the webhook receiver, which never triggers a tick) must still see the fresh queue
+        rather than an early 'queue empty' return, and the board it hands the brief must not be
+        built from a stale poll-state snapshot either (#16)."""
+        c = dict(self.cfg); c["repos"] = ["o/r"]
+        def fake_poll(cfg, repos=None):
+            queue.append(cfg, [{"kind": "pr_opened", "repo": "o/r", "number": 1, "sha": "abc1234"}])
+            return [{"kind": "pr_opened"}]
+        with patch("pmloop.run.events.poll", side_effect=fake_poll) as p, \
+             patch("pmloop.run.board.build", return_value={"repos": {}}), \
+             patch("pmloop.run.board.render", return_value="board"):
+            r = run.tick(c, dry=True)
+        p.assert_called_once_with(c)
+        self.assertTrue(r.get("dry")); self.assertEqual(r["events"], 1)
+
+    def test_tick_poll_finding_nothing_still_reports_queue_empty(self):
+        """Same wiring, but the poll finds no change -- tick must still poll (not skip it), and
+        still report an honest empty queue rather than fabricating an event."""
+        c = dict(self.cfg); c["repos"] = ["o/r"]
+        with patch("pmloop.run.events.poll", return_value=[]) as p, \
+             patch("pmloop.run.board.build", return_value={"repos": {}}), \
+             patch("pmloop.run.board.render", return_value="board"):
+            r = run.tick(c, dry=True)
+        p.assert_called_once_with(c)
+        self.assertEqual(r, {"ran": False, "reason": "queue empty"})
         queue.mark_processed(self.cfg, p); self.assertEqual(queue.pending(self.cfg), [])
 
     def test_diff_events(self):
