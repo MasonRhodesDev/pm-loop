@@ -156,6 +156,21 @@ class T(unittest.TestCase):
         self.assertIn("verbatim", text.lower())
         self.assertIn("never retype it", text.lower())
 
+    def test_briefs_carry_portability_rule(self):
+        """Every lane brief (dev, fix, reviewer) must carry the portability rule: environment details
+        (owner paths, hosts, LAN addresses) only enter through a boundary, and a reviewer blocks on one."""
+        pr = {"number": 7, "title": "T", "body": "b", "headRefOid": "a" * 40, "baseRefName": "main",
+              "labels": [], "files": [{"path": "x.py"}], "url": "https://example/pr/7"}
+        with patch("pmloop.gh.run", return_value="{}"):
+            dev_text = brief.dev("o/r", 3, self.cfg)
+        with patch("pmloop.gh.pr_view", return_value=pr), \
+             patch("pmloop.events.latest_verdict", return_value=None):
+            rev_text = brief.reviewer("o/r", 7, self.cfg, tier="light")
+        for text in (dev_text, rev_text):
+            self.assertIn("Portability:", text)
+            self.assertIn("gitignored override", text)
+        self.assertIn("no environment details", rev_text)
+
     def test_closing_keywords(self):
         bad = [m.group(0) for m in premerge.CLOSING_RE.finditer("fixes #12 and Closes #13, resolve #500's") if not m.group(0).startswith("Closes #")]
         self.assertEqual(bad, ["fixes #12", "resolve #500"])

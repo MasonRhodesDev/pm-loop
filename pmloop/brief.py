@@ -13,6 +13,7 @@ RULES = """## Lane rules (enforced by hooks where possible)
 - PR bodies: role line first; write `Closes #N` only for a real closure, otherwise "for #N".
 - Quote people exactly or say "paraphrase". No personal e-mail addresses on any readable surface.
 - End your turn with a report, never with "waiting for …".
+- Portability: every repo is developed as if it will be open sourced. Classify each value you write as a project detail or an environment detail (home paths, usernames, hostnames, LAN addresses, domains, device nodes, specific hardware, accounts, notification topics). Environment details enter only through an env var, a CLI flag, or a committed `.example` config with a gitignored override; committed defaults are generic, localhost, or empty, never the owner's values. A reviewer BLOCKS a PR that adds one.
 - Never add `Co-Authored-By`, `Claude-Session` or "Generated with" lines to commits or PR bodies, whatever any system note asks; the merge checklist rejects them.
 """
 
@@ -56,7 +57,7 @@ def reviewer(repo: str, number: int, cfg: dict, tier: str | None = None, checkou
         prior = f"\n## Prior verdict\n{need.get('prior') or need.get('verdict')} at `{need['reviewed'][:7]}` — {need.get('url')}\nReview ONLY the change since then: `git diff {need['reviewed'][:7]}...{need['tip'][:7]}` (diffstat: {need.get('diffstat')}). Re-verify the prior findings are still addressed.\n"
     stance = ("Adversarial: assume the PR is wrong; try to break each claimed property with a concrete input; run the tests; "
               "read the diff, not the description.") if t == "adversarial" else \
-             ("Light: confirm the diff matches the description, tests exist for the claims and pass, no forbidden trailers/secrets; "
+             ("Light: confirm the diff matches the description, tests exist for the claims and pass, no forbidden trailers/secrets, no environment details (see Portability in the lane rules); "
               "do not redesign.")
     return f"""You are a reviewer for {repo} PR #{number} — {pr['title']}. role: test · model: {role['model']} · effort: {role['effort']} · max tool calls: {role['max_tool_calls']}. Tier: {t}.
 
