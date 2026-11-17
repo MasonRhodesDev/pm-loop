@@ -1,4 +1,3 @@
-"""Append-only event queue + poller state. One JSONL line per event; `pm run` consumes unprocessed lines."""
 from __future__ import annotations
 import json, time, fcntl
 from pathlib import Path

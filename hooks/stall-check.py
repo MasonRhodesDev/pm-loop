@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-"""SubagentStop: flag a lane that ended its turn 'waiting' — nothing will ever notify it (lanes-end-turns-waiting)."""
 import json, re, sys
 h = json.load(sys.stdin)
 txt = json.dumps(h.get("last_assistant_message") or h.get("result") or h)[-4000:]

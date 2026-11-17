@@ -1,4 +1,3 @@
-"""Classify a PR's changed files into classes and pick the review tier — a script decides, not a reviewer."""
 from __future__ import annotations
 import fnmatch
 from . import gh
@@ -36,7 +35,7 @@ def for_pr(repo: str, number: int, cfg: dict) -> dict:
     pr = gh.pr_view(repo, number, "number,files,labels,headRefOid,author")
     files = [f["path"] for f in pr["files"]]
     r = tier_for(files, cfg, [l["name"] for l in pr["labels"]])
-    author = (pr.get("author") or {}).get("login", "")          # gh reports GitHub Apps as "app/<slug>"
+    author = (pr.get("author") or {}).get("login", "")
     for login, tier in cfg["review"].get("bot_authors", {}).items():
         slug = login.replace("[bot]", "")
         if author in (login, slug, f"app/{slug}"):

@@ -26,14 +26,10 @@ class T(unittest.TestCase):
         self.assertEqual(config.resolve_repo(c, "diarch"), "diarch")
 
     def test_resolve_repo_ambiguous_short_name_is_unchanged(self):
-        """Two configured repos share a short name -- leave it alone so a genuine typo (or a real
-        ambiguity) surfaces as gh's own format error instead of silently picking the wrong one."""
         c = dict(self.cfg); c["repos"] = ["OwnerA/diarch", "OwnerB/diarch"]
         self.assertEqual(config.resolve_repo(c, "diarch"), "diarch")
 
     def test_cli_resolves_short_repo_name_before_dispatching_to_classify(self):
-        """`pm classify diarch 5` -- the short name the board/doctrine print -- must reach
-        classify.for_pr as the full OWNER/REPO name gh itself requires (#1)."""
         d = tempfile.mkdtemp(); Path(d, ".pm-loop.toml").write_text('repos = ["Owner/diarch"]\n')
         with patch("pmloop.classify.for_pr", return_value={"tier": "none", "reason": "t"}) as fp, \
              patch("builtins.print"):
@@ -60,10 +56,6 @@ class T(unittest.TestCase):
         p = queue.pending(self.cfg); self.assertEqual(len(p), 1)
 
     def test_tick_polls_before_checking_the_queue_is_empty(self):
-        """run.tick() must poll itself -- a caller that skipped its own `pm events poll` (or only
-        runs the webhook receiver, which never triggers a tick) must still see the fresh queue
-        rather than an early 'queue empty' return, and the board it hands the brief must not be
-        built from a stale poll-state snapshot either (#16)."""
         c = dict(self.cfg); c["repos"] = ["o/r"]
         def fake_poll(cfg, repos=None):
             queue.append(cfg, [{"kind": "pr_opened", "repo": "o/r", "number": 1, "sha": "abc1234"}])
@@ -76,8 +68,6 @@ class T(unittest.TestCase):
         self.assertTrue(r.get("dry")); self.assertEqual(r["events"], 1)
 
     def test_tick_poll_finding_nothing_still_reports_queue_empty(self):
-        """Same wiring, but the poll finds no change -- tick must still poll (not skip it), and
-        still report an honest empty queue rather than fabricating an event."""
         c = dict(self.cfg); c["repos"] = ["o/r"]
         with patch("pmloop.run.events.poll", return_value=[]) as p, \
              patch("pmloop.run.board.build", return_value={"repos": {}}), \
@@ -100,9 +90,6 @@ class T(unittest.TestCase):
         m = events.VERDICT_RE.search("**role:** test · **model:** Claude Sonnet 5\n\n**Verdict: BLOCKED at 576efd2**\n\nTwo"); self.assertEqual((m.group(1), m.group(2)), ("BLOCKED", "576efd2"))
 
     def test_latest_verdict_prefers_newer_comment_over_older_review(self):
-        """A BLOCKED verdict posted as a plain issue-comment fallback (e.g. because the review
-        endpoint 422'd, issue #12) must still win over an older CLEAR review, so premerge/board
-        don't read a stale CLEAR at tip just because the newest verdict landed as a comment."""
         def fake_api_list(path, **kw):
             if "reviews" in path:
                 return [{"body": "**role:** test\n\n## CLEAR — tip `aaaaaaa`", "submitted_at": "2026-01-01T00:00:00Z",
@@ -116,14 +103,9 @@ class T(unittest.TestCase):
         self.assertEqual(v["verdict"], "BLOCKED"); self.assertEqual(v["tip"], "bbbbbbb")
 
     def test_latest_verdict_uses_review_commit_id_over_typoed_body_sha(self):
-        """Issue #4: a reviewer posted CLEAR with the review attached to the real tip
-        (commit_id on the review object matches HEAD) but retyped the SHA in the body prose
-        and got one character wrong. The review's own commit_id is authoritative — the body
-        SHA must not override it. On unfixed code this returns the typo'd body SHA
-        ('cccccc0', one char off from the real 'cccccc1')."""
         def fake_api_list(path, **kw):
             if "reviews" in path:
-                return [{"body": "**role:** test\n\n## CLEAR — tip `cccccc0`",  # typo: real tip is cccccc1
+                return [{"body": "**role:** test\n\n## CLEAR — tip `cccccc0`",
                           "commit_id": "cccccc1", "submitted_at": "2026-01-03T00:00:00Z",
                           "html_url": "u3", "user": {"login": "bot"}}]
             if "comments" in path:
@@ -134,8 +116,6 @@ class T(unittest.TestCase):
         self.assertEqual(v["verdict"], "CLEAR"); self.assertEqual(v["tip"], "cccccc1")
 
     def test_latest_verdict_falls_back_to_body_sha_when_review_has_no_commit_id(self):
-        """Defensive: if a review object somehow lacks commit_id, fall back to the body-parsed
-        SHA rather than losing the tip entirely."""
         def fake_api_list(path, **kw):
             if "reviews" in path:
                 return [{"body": "**role:** test\n\n## CLEAR — tip `ddddddd`",
@@ -146,8 +126,6 @@ class T(unittest.TestCase):
         self.assertEqual(v["tip"], "ddddddd")
 
     def test_reviewer_brief_tells_agent_to_paste_tip_verbatim(self):
-        """Issue #4 suggestion 2: the reviewer brief must tell the agent to paste the tip
-        verbatim rather than retype it, since a retyped SHA can silently typo one character."""
         pr = {"number": 7, "title": "T", "body": "b", "headRefOid": "a" * 40, "baseRefName": "main",
               "labels": [], "files": [{"path": "x.py"}], "url": "https://example/pr/7"}
         with patch("pmloop.gh.pr_view", return_value=pr), \
@@ -157,8 +135,6 @@ class T(unittest.TestCase):
         self.assertIn("never retype it", text.lower())
 
     def test_briefs_carry_portability_rule(self):
-        """Every lane brief (dev, fix, reviewer) must carry the portability rule: environment details
-        (owner paths, hosts, LAN addresses) only enter through a boundary, and a reviewer blocks on one."""
         pr = {"number": 7, "title": "T", "body": "b", "headRefOid": "a" * 40, "baseRefName": "main",
               "labels": [], "files": [{"path": "x.py"}], "url": "https://example/pr/7"}
         with patch("pmloop.gh.run", return_value="{}"):
@@ -176,20 +152,14 @@ class T(unittest.TestCase):
         self.assertEqual(bad, ["fixes #12", "resolve #500"])
 
     def test_closing_kw_midsentence_prose_not_flagged(self):
-        """Issue #21: a casual mid-sentence, non-canonical mention like 'merged 361d59d, closes #568'
-        inside a paragraph isn't functioning as an intended closing line and must not be flagged."""
         body = "Fixed the bug. merged 361d59d, closes #568 in an earlier PR.\n\nCloses #21"
         self.assertEqual(premerge._closing_kw_violations(body, "Closes #"), [])
 
     def test_closing_kw_flagged_when_it_starts_its_own_line(self):
-        """A malformed closing keyword that IS its own line -- the shape a real (if badly-formed)
-        closing trailer takes -- is still a genuine violation of the 'Closes #N' doctrine."""
         body = "See details below.\nfixes #12\nresolve #500"
         self.assertEqual(premerge._closing_kw_violations(body, "Closes #"), ["fixes #12", "resolve #500"])
 
     def test_closing_kw_flagged_when_indented_own_line(self):
-        """Leading whitespace before an own-line match must not exempt it -- same anchor rule
-        _forbidden_trailer_matches uses (strip, then check position)."""
         body = "notes\n   Fixes #12"
         self.assertEqual(premerge._closing_kw_violations(body, "Closes #"), ["Fixes #12"])
 
@@ -207,8 +177,6 @@ class T(unittest.TestCase):
             events.from_webhook(self.cfg, {"x-hub-signature-256": "sha256=00", "x-github-event": "pull_request"}, body, "s")
 
     def test_webhook_review_verdict_uses_commit_id_over_typoed_body_sha(self):
-        """Same defect, same file (issue #4): a pull_request_review webhook delivery carries
-        commit_id on the review object too — it must win over a hand-typed SHA in the body."""
         import hmac, hashlib
         payload = {"action": "submitted", "repository": {"full_name": "o/r"},
                    "pull_request": {"number": 9},
@@ -224,8 +192,6 @@ class T(unittest.TestCase):
         txt = status.render(f, self.cfg); self.assertIn("#5 changed 2 file(s) under engine for #4.", txt); self.assertIn("**merged:** `fffffff`", txt)
 
     def test_status_render_uses_squash_subject_over_stale_title(self):
-        """A PR retitled in prose after a rework still names the withdrawn design in `title`; the
-        squash commit subject (fixed at merge time) is what the heading should show instead (#13)."""
         f = {"number": 8, "title": "Add the old widget design", "url": "u", "branch": "b", "base": "main",
              "state": "MERGED", "merged_at": "2026-09-17T00:00:00Z", "merge_sha": "a" * 40, "head": "a" * 40,
              "files": 1, "additions": 1, "deletions": 1, "closes": [], "labels": [], "paths": ["x.py"],
@@ -236,8 +202,6 @@ class T(unittest.TestCase):
         self.assertNotIn("Add the old widget design", txt)
 
     def test_status_facts_takes_squash_subject_from_merge_commit_api_stripping_pr_suffix(self):
-        """The subject comes from the GitHub API (not the local checkout, which may not have fetched the
-        merge yet) and drops the trailing ` (#N)` that `pm merge` appends when no --subject is given."""
         pr = {"number": 8, "title": "Add the old widget design", "url": "u", "headRefOid": "a" * 40, "headRefName": "b",
               "baseRefName": "main", "state": "MERGED", "mergedAt": "t", "mergeCommit": {"oid": "a" * 40},
               "files": [], "closingIssuesReferences": [], "labels": [], "author": {}, "additions": 0, "deletions": 0, "body": ""}
@@ -258,7 +222,6 @@ class T(unittest.TestCase):
                 "checked_at": "now", "role": None, "checks": {"sha": "f" * 40, "state": "success", "bad": []}}
 
     def test_record_refuses_to_post_when_pr_is_not_merged(self):
-        """`pm record` posts a record on the MERGED PR, never on an open one."""
         with patch("pmloop.status.facts", return_value={"state": "OPEN"}), patch("pmloop.gh.api") as api:
             r = status.record("o/r", 5, self.cfg, None, "docs", "sonnet", "medium")
         self.assertFalse(r["ok"]); self.assertFalse(r["posted"]); api.assert_not_called()
@@ -294,18 +257,12 @@ class T(unittest.TestCase):
         self.assertTrue(r["ok"]); r = factcheck.check('"not in the sources at all"', "o/r", self.cfg, ["x"]); self.assertFalse(r["ok"])
 
     def test_factcheck_ignores_comment_and_review_id_urls(self):
-        """#2: a comment-id URL fragment like '#issuecomment-5733586153' or
-        '.../pullrequestreview-5251441874' carries a 10-digit id of its own that isn't a workflow run --
-        must not be extracted as one (previously misreported 'no such workflow run')."""
         text = ("see https://github.com/o/r/pull/24#issuecomment-5733586153 and "
                 "https://github.com/o/r/pull/24#pullrequestreview-5251441874 for context")
         r = factcheck.check(text, "o/r", self.cfg)
         self.assertEqual(r["checked"], 0, r["findings"])
 
     def test_factcheck_ignores_job_id_in_run_url(self):
-        """A `/actions/runs/<run-id>/job/<job-id>` URL's job id is also a 9-12 digit number right after
-        `/job/` -- must not be extracted as a second (bogus) run id; the real run id right after
-        `/actions/runs/` is still checked."""
         with patch("pmloop.gh.run", return_value=json.dumps({"s": "completed", "c": "success", "h": "a" * 40})) as run:
             r = factcheck.check("see .../actions/runs/1234567890/job/9876543210 for logs", "o/r", self.cfg)
         self.assertEqual(r["checked"], 1, r["findings"])
@@ -324,15 +281,11 @@ class T(unittest.TestCase):
         self.assertEqual(factcheck.added_only(base, new), "see #5 for context")
 
     def test_added_only_drops_removed_and_unchanged_refs(self):
-        """A reference that was already there, or one that got deleted, must not be re-checked -- only
-        genuinely new content counts (#2)."""
         base = "old: see #1\nkeep this\n"
         new = "keep this\nnew: see #2\n"
         self.assertEqual(factcheck.added_only(base, new), "new: see #2")
 
     def test_factcheck_base_text_only_checks_added_lines(self):
-        """#2: with `base_text` given, only the lines added relative to it are scanned -- an unchanged
-        reference already present in the base is not re-verified."""
         base = "already checked: #1\n"
         new = "already checked: #1\nbrand new: #2\n"
         seen = []
@@ -345,9 +298,6 @@ class T(unittest.TestCase):
         self.assertEqual(seen, ["repos/o/r/issues/2"])
 
     def test_cli_factcheck_base_resolves_via_git_show(self):
-        """`pm factcheck --base <ref>` shells out to `git show <ref>:./<file>` from the file's own
-        directory, and a nonzero exit (file didn't exist at that ref) is treated as an empty base rather
-        than an error."""
         d = tempfile.mkdtemp(); f = Path(d, "STATUS.md"); f.write_text("only new: #9\n")
         with patch("subprocess.run") as run, \
              patch("pmloop.factcheck.check", return_value={"ok": True, "checked": 0, "findings": []}) as fc, \
@@ -366,7 +316,6 @@ class T(unittest.TestCase):
                 "commits": [], "labels": []}
 
     def test_premerge_mergeable_unknown_polls_then_passes(self):
-        """mergeStateStatus UNKNOWN (base just moved) is retried, not taken as a hard fail."""
         tip = "a" * 40
         calls = {"n": 0}
         def fake_pr_view(repo, number, fields=""):
@@ -385,10 +334,9 @@ class T(unittest.TestCase):
         mrow = next(r for r in rep["rows"] if r["check"] == "mergeable")
         self.assertTrue(mrow["ok"], mrow); self.assertIn("CLEAN", mrow["detail"])
         self.assertTrue(rep["ok"], rep["rows"])
-        self.assertEqual(calls["n"], 3)   # 1 initial view + 2 polls before it resolved
+        self.assertEqual(calls["n"], 3)
 
     def test_premerge_mergeable_unknown_gives_up_after_bounded_retries(self):
-        """Still UNKNOWN after the bound: decide (fail), don't retry forever and don't wave it through."""
         tip = "b" * 40
         calls = {"n": 0}
         base = self._base_pr(tip); base["mergeStateStatus"] = "UNKNOWN"
@@ -406,12 +354,9 @@ class T(unittest.TestCase):
         mrow = next(r for r in rep["rows"] if r["check"] == "mergeable")
         self.assertFalse(mrow["ok"]); self.assertIn("UNKNOWN", mrow["detail"])
         self.assertFalse(rep["ok"])
-        self.assertEqual(calls["n"], 3)   # 1 initial + (attempts - 1) = 2 polls, then it stops
+        self.assertEqual(calls["n"], 3)
 
     def test_premerge_mergeable_blocked_retries_when_rest_of_checklist_green_then_passes(self):
-        """#20: mergeStateStatus BLOCKED is GitHub's other stale-cache flavor (same root cause as #8's
-        UNKNOWN) when review is CLEAR at tip and checks are green — retry it too, bounded, and let it pass
-        once the cache catches up."""
         tip = "d" * 40
         calls = {"n": 0}
         base = self._base_pr(tip); base["mergeStateStatus"] = "BLOCKED"
@@ -431,11 +376,9 @@ class T(unittest.TestCase):
         mrow = next(r for r in rep["rows"] if r["check"] == "mergeable")
         self.assertTrue(mrow["ok"], mrow); self.assertIn("CLEAN", mrow["detail"]); self.assertIn("was BLOCKED", mrow["detail"])
         self.assertTrue(rep["ok"], rep["rows"])
-        self.assertEqual(calls["n"], 3)   # 1 initial + 2 polls before it resolved, same bound as UNKNOWN
+        self.assertEqual(calls["n"], 3)
 
     def test_premerge_mergeable_blocked_not_retried_when_checks_are_not_actually_green(self):
-        """A real block (here: checks not green) must fail outright, not get the stale-cache retry — proves
-        BLOCKED isn't waved through unconditionally, only when the rest of the checklist already says ok."""
         tip = "e" * 40
         calls = {"n": 0}
         base = self._base_pr(tip); base["mergeStateStatus"] = "BLOCKED"
@@ -453,11 +396,9 @@ class T(unittest.TestCase):
         mrow = next(r for r in rep["rows"] if r["check"] == "mergeable")
         self.assertFalse(mrow["ok"]); self.assertEqual(mrow["detail"], "BLOCKED")
         self.assertFalse(rep["ok"])
-        self.assertEqual(calls["n"], 1)   # no poll attempted: checks aren't green, so this isn't the stale-cache case
+        self.assertEqual(calls["n"], 1)
 
     def test_premerge_mergeable_blocked_gives_up_after_bounded_retries_even_when_checklist_green(self):
-        """Still BLOCKED after the bound despite a green checklist: decide (fail), don't retry forever, and
-        say so — this is a real block this checklist can't see (e.g. a rule it doesn't evaluate)."""
         tip = "f" * 40
         calls = {"n": 0}
         base = self._base_pr(tip); base["mergeStateStatus"] = "BLOCKED"
@@ -475,7 +416,7 @@ class T(unittest.TestCase):
         mrow = next(r for r in rep["rows"] if r["check"] == "mergeable")
         self.assertFalse(mrow["ok"]); self.assertIn("BLOCKED", mrow["detail"]); self.assertIn("stale cache", mrow["detail"])
         self.assertFalse(rep["ok"])
-        self.assertEqual(calls["n"], 3)   # 1 initial + (attempts - 1) = 2 polls, then it stops
+        self.assertEqual(calls["n"], 3)
 
     def _secvar_pr(self, extra_body=""):
         return {"number": 9, "title": "T", "body": "**role:** dev · **model:** sonnet · **effort:** high" + extra_body,
@@ -509,8 +450,6 @@ class T(unittest.TestCase):
         return next(r for r in rep["rows"] if r["check"] == "secrets/vars referenced exist")
 
     def test_secvar_missing_secrets_and_vars_from_workflow_diff_fail_and_are_named(self):
-        """Reproduces #6: a workflow reads three secrets/vars that don't exist anywhere; only the pending
-        checks row used to fail. This row must now fail too and name all three."""
         files = [{"filename": ".github/workflows/ci.yml", "patch":
                   "@@ -1,2 +1,4 @@\n+  KEY: ${{ secrets.X_KEY }}\n+  SECRET: ${{ secrets.X_SECRET }}\n+  V: ${{ vars.X }}\n"}]
         row = self._run_secvar(files)
@@ -523,7 +462,6 @@ class T(unittest.TestCase):
         self.assertTrue(row["ok"], row)
 
     def test_secvar_present_only_in_environment_listing_passes(self):
-        """Covers the environment scope and the `key=` path of `api_list` for the first time."""
         files = [{"filename": ".github/workflows/deploy.yml", "patch": "@@ -1,1 +1,2 @@\n+  K: ${{ secrets.DEPLOY_KEY }}\n"}]
         row = self._run_secvar(files, env_names=["prod"], env_secrets={"prod": ["DEPLOY_KEY"]})
         self.assertTrue(row["ok"], row)
@@ -564,15 +502,10 @@ class T(unittest.TestCase):
         self.assertFalse(row["ok"]); self.assertIn("secrets.B", row["detail"]); self.assertNotIn("secrets.A", row["detail"])
 
     def test_secvar_declared_in_body_only_is_still_checked(self):
-        """Issue asks to diff-scan .github/**, not to drop the pre-existing body scan."""
         row = self._run_secvar([], body="\n\nreads ${{ secrets.BODY_ONLY }}")
         self.assertFalse(row["ok"]); self.assertIn("secrets.BODY_ONLY", row["detail"])
 
     def test_secvar_bare_mention_in_body_prose_is_not_flagged(self):
-        """A PR body that merely *talks about* a secret name (documenting a bug, quoting a test, an
-        example like "secrets.A || secrets.B", or quoting an actual `${{ }}` snippet in backticks as an
-        example) must not be treated as a real reference. Regression for the false positive #24 itself
-        hit: its own body prose named fixture/example secrets, some inline-code-quoted, that don't exist."""
         body_extra = ("\n\nreads secrets.X_KEY, secrets.X_SECRET and vars.X\n"
                       "test_secvar_removed_line_is_not_flagged -- `-  ${{ secrets.OLD }}`\n"
                       "e.g. `${{ secrets.A || secrets.B }}`")
@@ -580,14 +513,10 @@ class T(unittest.TestCase):
         self.assertTrue(row["ok"], row); self.assertIn("none referenced", row["detail"])
 
     def test_secvar_real_expression_in_body_is_still_flagged(self):
-        """A PR body containing an actual `${{ secrets.FOO }}` expression written directly into the
-        prose (not quoted as markdown code) is still a real reference and must still be checked."""
         row = self._run_secvar([], body="\n\nthe new step adds ${{ secrets.FOO }} to the job env")
         self.assertFalse(row["ok"]); self.assertIn("secrets.FOO", row["detail"])
 
     def test_secvar_code_quoted_expression_in_body_is_not_flagged(self):
-        """The same expression, but quoted as inline markdown code (as a PR description would when
-        citing an existing line rather than declaring a new one), is not a reference."""
         row = self._run_secvar_no_api([], body="\n\nsee `${{ secrets.QUOTED }}` in the old workflow")
         self.assertTrue(row["ok"], row); self.assertIn("none referenced", row["detail"])
 
@@ -623,14 +552,10 @@ class T(unittest.TestCase):
         self.assertTrue(row["ok"], row); self.assertIn("#8", row["detail"])
 
     def test_owner_row_fails_closed_when_issue_lookup_errors(self):
-        """An unverifiable reference must never silently pass -- that would defeat the row's whole
-        purpose of never waving an owner question through."""
         row = self._run_owner_row("for #9", api_side_effect=gh.GhError("404"))
         self.assertFalse(row["ok"], row); self.assertIn("#9", row["detail"])
 
     def test_owner_row_existing_tests_never_call_gh_api(self):
-        """Every pre-existing premerge test uses `_base_pr`, whose body references no issue -- this
-        row must make zero `gh.api` calls for them, so none of those tests needed to change."""
         tip = "a" * 40; pr = self._base_pr(tip)
         with patch("pmloop.gh.pr_view", return_value=pr), \
              patch("pmloop.gh.run", return_value=tip + "\n"), \
@@ -677,91 +602,62 @@ class T(unittest.TestCase):
         return next(r for r in rep["rows"] if r["check"] == "role line in body")
 
     def test_role_line_row_skipped_for_non_app_bot_author(self):
-        """#2: dependabot never writes a role line -- `pm merge` composes the squash commit's own
-        subject/body (role line included) at merge time, so checking dependabot's raw PR body for a
-        role line it was never going to write is checking the wrong artifact. `gh pr view --json author`
-        reports Dependabot as `{"login": "app/dependabot", "is_bot": true}` (verified live against a real
-        Dependabot PR) -- the row must pass with a note explaining the skip, not fail every such PR."""
         self.cfg["bot"]["slug"] = "mason-agent"
         row = self._run_role_row(author="app/dependabot", is_bot=True, body_override="bump foo from 1.0 to 1.1")
         self.assertTrue(row["ok"], row)
         self.assertIn("skipped", row["detail"]); self.assertIn("app/dependabot", row["detail"])
 
     def test_role_line_row_skip_falls_back_to_login_pattern_without_is_bot_field(self):
-        """An older `gh` that doesn't emit `is_bot` at all still gets the skip via the `<name>[bot]`
-        login-pattern fallback."""
         self.cfg["bot"]["slug"] = "mason-agent"
         row = self._run_role_row(author="dependabot[bot]", body_override="bump foo from 1.0 to 1.1")
         self.assertTrue(row["ok"], row)
 
     def test_role_line_row_still_checked_for_the_app_itself(self):
-        """The configured app's own dev-lane PRs (reported as `app/<slug>`, `is_bot: true`, same as any
-        other GitHub App) DO write their own role line (the open_pr tool prepends it) -- the skip must
-        not swallow a genuinely missing role line on the app's own PR."""
         self.cfg["bot"]["slug"] = "mason-agent"
         row = self._run_role_row(author="app/mason-agent", is_bot=True, body_override="no role line here")
         self.assertFalse(row["ok"], row)
 
     def test_role_line_row_not_skipped_when_no_app_slug_configured(self):
-        """With `bot.slug` unset (the default), there's no way to tell 'some other bot' from 'the app
-        itself' -- the row must fail rather than silently pass on that unverifiable signal, matching the
-        rest of this checklist's stance (e.g. `_owner_row`) of failing, not waving through, on an
-        unresolvable case."""
         self.assertEqual(self.cfg["bot"]["slug"], "")
         row = self._run_role_row(author="app/dependabot", is_bot=True, body_override="bump foo from 1.0 to 1.1")
         self.assertFalse(row["ok"], row)
 
     def test_role_line_row_unchanged_for_human_author(self):
-        """A human (non-bot) PR author is unaffected by the bot skip -- the row still checks the body."""
         row = self._run_role_row(author="ahuman", is_bot=False, body_override="no role line here")
         self.assertFalse(row["ok"], row)
-        row_ok = self._run_role_row(author="ahuman", is_bot=False)  # _base_pr's body already has a role line
+        row_ok = self._run_role_row(author="ahuman", is_bot=False)
         self.assertTrue(row_ok["ok"], row_ok)
 
     def test_trailer_regenerated_with_prose_in_commit_message_is_not_flagged(self):
-        """Reproduces #11: a commit line like 'notices/... regenerated with the latest license list'
-        must not trip the forbidden 'Generated with' footer pattern -- it's prose, not a footer."""
         commits = [{"messageHeadline": "notices/THIRD-PARTY-NOTICES.txt regenerated with the latest license list",
                     "messageBody": ""}]
         row = self._run_trailer_row(commits=commits, method="merge")
         self.assertTrue(row["ok"], row)
 
     def test_trailer_bare_mention_mid_sentence_in_body_is_not_flagged(self):
-        """A PR body that talks about the checker (e.g. documenting this very fix) and mentions
-        'generated with' or 'co-authored-by' mid-sentence, not as its own line, must not be flagged --
-        otherwise this fix's own PR body would trip the check it introduces (the #6 self-referential trap)."""
         body_extra = ("\n\nThis fixes premerge so text that merely contains 'generated with' as part of a "
                       "longer sentence, such as when something was regenerated with a tool, no longer matches.")
         row = self._run_trailer_row(body=body_extra)
         self.assertTrue(row["ok"], row)
 
     def test_trailer_backticked_mid_sentence_mention_is_not_flagged(self):
-        """Same trap, phrased as an inline-code example: a line that only starts with 'The fix ...' and
-        merely mentions the pattern in backticks mid-sentence is not a real footer."""
         body_extra = "\n\nThe fix checks for a line starting with `Co-Authored-By:` at line start."
         row = self._run_trailer_row(body=body_extra)
         self.assertTrue(row["ok"], row)
 
     def test_trailer_detail_shows_matched_line_not_just_pattern_name(self):
-        """The row detail must name the actual offending line, not just which pattern matched, so a
-        false positive is obvious to a human reading it."""
         body_extra = "\n\nCo-Authored-By: Claude <noreply@example.com>"
         row = self._run_trailer_row(body=body_extra)
         self.assertFalse(row["ok"])
         self.assertIn("Co-Authored-By: Claude <noreply@example.com>", row["detail"])
 
     def test_trailer_squash_merge_does_not_scan_commit_messages_and_says_so(self):
-        """A squash merge uses pm merge's own composed subject/body, so a forbidden trailer sitting only
-        in a branch commit message can't leak into the merge -- it must not be scanned, and the row detail
-        must say so."""
         commits = [{"messageHeadline": "x", "messageBody": "Co-Authored-By: Claude <noreply@example.com>"}]
         row = self._run_trailer_row(commits=commits, method="squash")
         self.assertTrue(row["ok"], row)
         self.assertIn("commit", row["detail"].lower())
 
     def test_trailer_nonsquash_merge_scans_commit_messages_and_says_so(self):
-        """merge_method != squash: branch commit messages become part of the real merge, so they must be
-        scanned, the offending line reported, and the detail must say commit messages were checked."""
         commits = [{"messageHeadline": "x", "messageBody": "Co-Authored-By: Claude <noreply@example.com>"}]
         row = self._run_trailer_row(commits=commits, method="merge")
         self.assertFalse(row["ok"])
@@ -773,7 +669,6 @@ class T(unittest.TestCase):
         self.assertFalse(row["ok"])
 
     def test_trailer_lowercase_co_authored_by_is_still_flagged(self):
-        """Git trailer keys are case-insensitive; keep that behavior."""
         row = self._run_trailer_row(body="\n\nco-authored-by: someone <x@example.com>")
         self.assertFalse(row["ok"])
 
@@ -800,14 +695,11 @@ class T(unittest.TestCase):
         return next(r for r in rep["rows"] if r["check"].startswith("closing keywords"))
 
     def test_closing_row_midsentence_prose_mention_passes(self):
-        """Reproduces #21 end to end through premerge.check: a PR body narrating a past merge with a
-        casual lowercase 'closes #N' mid-sentence must not fail the row."""
         body = "\n\nFixed by merging 361d59d, closes #568 in a prior PR.\n\nfor #21"
         row = self._run_closing_row(body=body)
         self.assertTrue(row["ok"], row)
 
     def test_closing_row_malformed_own_line_still_fails(self):
-        """A malformed closing keyword written as its own line is still caught."""
         row = self._run_closing_row(body="\n\nfixes #12\n\nfor #21")
         self.assertFalse(row["ok"])
         self.assertIn("fixes #12", row["detail"])
@@ -824,7 +716,6 @@ class T(unittest.TestCase):
         self.assertFalse(r["merged"]); api.assert_not_called()
 
     def test_merge_force_premerge_ok_overrides_and_logs_ledger(self):
-        """--force-premerge-ok is a human override: it proceeds despite a failing row, and it is logged."""
         fail_rep = {"repo": "o/r", "number": 7, "tip": "c" * 40, "title": "T", "ok": False,
                     "rows": [{"check": "checks green", "ok": False, "detail": "pending"}]}
         with patch("pmloop.premerge.check", return_value=fail_rep), \
@@ -837,10 +728,7 @@ class T(unittest.TestCase):
         entry = json.loads(lines[0])
         self.assertIn("force-premerge-ok", entry["note"]); self.assertIn("checks green", entry["note"])
 
-    # -- #7: required_check fallback when the named check doesn't exist on the SHA at all --
-
     def test_checks_state_required_present_in_progress_is_pending(self):
-        """Regression guard: a named check that exists but hasn't finished is still pending, unfiltered."""
         runs = [{"name": "ci", "status": "in_progress", "conclusion": None}]
         with patch("pmloop.gh.check_runs", return_value=runs):
             self.assertEqual(gh.checks_state("o/r", "a"*40, "ci"), ("pending", ["ci=in_progress/None"]))
@@ -851,8 +739,6 @@ class T(unittest.TestCase):
             self.assertEqual(gh.checks_state("o/r", "a"*40, "ci"), ("success", []))
 
     def test_checks_state_required_missing_falls_back_to_all_green(self):
-        """The core bug (#7): `required` names a job this repo's workflow doesn't have at all, but every
-        actual check-run is green -- must report success, not pending-forever."""
         runs = [{"name": "build", "status": "completed", "conclusion": "success"},
                 {"name": "lint", "status": "completed", "conclusion": "success"}]
         with patch("pmloop.gh.check_runs", return_value=runs):
@@ -875,7 +761,6 @@ class T(unittest.TestCase):
         self.assertEqual(bad, ["ci=missing (fell back to all checks)", "build=in_progress/None"])
 
     def test_checks_state_no_runs_at_all_is_still_plain_pending(self):
-        """Nothing has started yet -- genuinely nothing to fall back to, unchanged from before."""
         with patch("pmloop.gh.check_runs", return_value=[]):
             self.assertEqual(gh.checks_state("o/r", "a"*40, "ci"), ("pending", ["ci=missing"]))
 
@@ -894,8 +779,6 @@ class T(unittest.TestCase):
         self.assertEqual(config.required_check(self.cfg, "o/r-not-listed"), "")
 
     def test_required_check_layering_repo_toml_can_set_a_map(self):
-        """A `[merge.required_check]` table in the user config loads and merges intact (not just the
-        in-process helper -- this exercises tomllib + config._merge end to end)."""
         d = tempfile.mkdtemp()
         Path(d, ".pm-loop.toml").write_text('[merge.required_check]\n"o/r" = "ci"\n')
         c = config.load(d)
@@ -925,8 +808,6 @@ class T(unittest.TestCase):
         cs.assert_called_once_with("o/r", "a"*40, "ci")
 
     def test_snapshot_requests_and_stores_pr_body(self):
-        """#30: board.build needs the PR body to find linked issues, but snapshot's --json field
-        list never asked gh for it -- this is the failing half of the fix without it."""
         prs = [{"number": 1, "title": "t", "body": "Closes #7", "headRefOid": "a"*40, "headRefName": "b",
                 "baseRefName": "main", "isDraft": False, "labels": [], "updatedAt": "t", "mergeStateStatus": "CLEAN"}]
         with patch("pmloop.gh.run", side_effect=[json.dumps(prs), json.dumps([]), json.dumps([])]) as run, \
@@ -981,32 +862,21 @@ class T(unittest.TestCase):
         self.assertEqual(nxt, "MERGE CANDIDATE: pm merge")
 
     def test_board_no_api_calls_when_body_has_no_linked_issues(self):
-        """Cost claim: a PR whose body links no issue makes zero extra `gh.api` calls at board-render
-        time (mirrors premerge's own test_owner_row_existing_tests_never_call_gh_api)."""
         snap = {"prs": {"1": self._board_pr()}, "issues": {}, "main": {}}
         with patch("pmloop.events.snapshot", return_value=snap), patch("pmloop.gh.api") as api:
             board.build(self.cfg, repos=["o/r"], use_state=False)
         api.assert_not_called()
 
     def test_board_owner_hold_outranks_needs_review(self):
-        """Same priority as the direct needs-owner-label check: an owner-held linked issue must win
-        over 'needs review (pm classify -> brief reviewer)' (no verdict yet), not just over
-        MERGE CANDIDATE -- #30's fix inserts the check second, right after the direct-label elif."""
         nxt = self._build(self._board_pr(body="for #7", verdict=None),
                            api_return={"title": "Decide it", "labels": [{"name": "needs-owner"}]})
         self.assertEqual(nxt, "held: needs-owner (linked #7)")
 
     def test_board_holds_with_distinct_message_when_linked_issue_unverifiable(self):
-        """An unverifiable reference must fail closed on the board too, same stance
-        premerge._owner_row takes -- a lookup error is not the same as a verified 'not owner-held',
-        so it must never read as MERGE CANDIDATE either. Distinct wording from the flagged case so a
-        PM scanning the board can tell 'owner-held' from 'couldn't check'."""
         nxt = self._build(self._board_pr(body="for #9"), api_side_effect=gh.GhError("404"))
         self.assertEqual(nxt, "held: linked #9 could not be verified")
 
     def test_board_own_needs_owner_label_still_outranks_everything(self):
-        """Regression guard: the pre-existing direct-label check must still fire first and must not
-        trigger an extra `gh.api` linked-issue lookup at all."""
         with patch("pmloop.gh.api") as api:
             nxt = self._build(self._board_pr(labels=["needs-owner"], body="for #7"))
         api.assert_not_called()
@@ -1029,9 +899,6 @@ class T(unittest.TestCase):
         self.assertEqual((model, effort), (self.cfg["roles"]["pm"]["model"], self.cfg["roles"]["pm"]["effort"]))
 
     def test_role_model_effort_has_no_env_override_for_model(self):
-        """No reliable live signal for "the model actually running this session" was found (see
-        `_role_model_effort`'s docstring) -- CLAUDE_CODE_SUBAGENT_MODEL is a static subagent-spawn
-        setting, not the current session's own model, so it must NOT be read as a model override."""
         with patch.dict(os.environ, {"CLAUDE_CODE_SUBAGENT_MODEL": "opus"}):
             model, effort = cli._role_model_effort(self.cfg, "pm", None, None)
         self.assertEqual(model, self.cfg["roles"]["pm"]["model"])

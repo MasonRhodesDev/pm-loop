@@ -1,4 +1,3 @@
-# <repo>/.pm-loop.toml — repo-level overrides (checked in, so lanes and the PM see the same rules)
 [review]
 adversarial_paths = ["engine/**", "router/**", "store/**", "auth/**"]
 [merge]

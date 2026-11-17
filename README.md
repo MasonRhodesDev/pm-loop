@@ -9,8 +9,6 @@ Event-driven, script-first PM loop for GitHub repos worked by Claude Code agents
 - MCP server `gh-bot`: every GitHub write as a GitHub App with a role line; merge gated by CLEAR+green
 - deploy: systemd timer for the headless tick, optional webhook receiver to keep the queue fresh between runs; Nomad job for a local llama.cpp model (prose only)
 
-See `docs/DESIGN.md` for what each part replaces and how it is used.
-
 ## Quick start
 ```
 cp config/config.example.toml ~/.config/pm-loop/config.toml   # bot app id/key, repos, models, llm endpoint

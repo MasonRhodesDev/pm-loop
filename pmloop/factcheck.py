@@ -1,28 +1,14 @@
-"""Mechanical fact-check of a STATUS/DECISIONS entry: every PR number, SHA, run id and quoted string is
-looked up; the report lists what could not be confirmed. No model involved."""
 from __future__ import annotations
 import re, json, sys, difflib
 from . import gh
 
 PR_RE = re.compile(r"(?<![\w/])#(\d{1,6})\b")
 SHA_RE = re.compile(r"`([0-9a-f]{7,40})`")
-# A bare 9-12 digit run id, but not one that's actually a comment/review/event/job id embedded in a
-# GitHub URL fragment -- '#issuecomment-5733586153', 'pullrequestreview-5251441874',
-# 'discussion_r1234567890', '#event-1234567890', '#commitcomment-1234567890',
-# '.../actions/runs/<run-id>/job/<job-id>' all carry a 9-12 digit id of their own shape, and without
-# this exclusion every one of them gets misread as a workflow-run id and reported "no such workflow
-# run" (false positive; a real run id shows up in plain prose or right after `/actions/runs/`, never
-# behind one of these prefixes).
 RUN_RE = re.compile(r"(?<!issuecomment-)(?<!pullrequestreview-)(?<!discussion_r)"
                      r"(?<!commitcomment-)(?<!event-)(?<!/job/)\b(\d{9,12})\b")
 QUOTE_RE = re.compile(r'"([^"\n]{12,200})"')
 
 def added_only(base_text: str, new_text: str) -> str:
-    """Only the lines a unified diff of base_text -> new_text *adds* (the `+` lines, `+++` file header
-    excluded) -- so a large mostly-unchanged file (a STATUS.md that only ever grows) has just its new
-    content fact-checked instead of re-verifying every reference in the whole file on every run (#2).
-    A removed reference is never re-checked either, same rationale `_added_lines` already uses for the
-    premerge secrets/vars scan."""
     diff = difflib.unified_diff(base_text.splitlines(), new_text.splitlines(), lineterm="")
     return "\n".join(l[1:] for l in diff if l.startswith("+") and not l.startswith("+++"))
 

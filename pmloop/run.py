@@ -1,13 +1,10 @@
-"""One PM tick, headless: build the brief from the queue + board, run `claude -p`, record cost, mark events done."""
 from __future__ import annotations
 import json, subprocess, os, shlex
 from pathlib import Path
 from . import queue, board, brief, ledger, config, events
 
 def tick(cfg: dict, checkout_dirs: dict[str, str] | None = None, dry: bool = False, force: bool = False, plan_only: bool = False) -> dict:
-    events.poll(cfg)  # safe every tick (de-dupes against poll-state.json); a caller that skipped
-                       # its own `pm events poll` (or only runs the webhook receiver) must not hand
-                       # the brief a stale board.
+    events.poll(cfg)
     ev = queue.pending(cfg)
     if not ev and not force:
         return {"ran": False, "reason": "queue empty"}

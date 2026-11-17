@@ -1,4 +1,3 @@
-"""One bounded wait for CI, as a process — never as LLM turns. Emits a queue event and an exit code."""
 from __future__ import annotations
 import subprocess, time, json
 from . import gh, queue, config
@@ -7,7 +6,6 @@ def pr(repo: str, number: int, cfg: dict, timeout_s: int | None = None) -> dict:
     t = timeout_s or cfg["watch"]["timeout_s"]; deadline = time.time() + t
     sha = gh.pr_view(repo, number, "headRefOid")["headRefOid"]
     req = config.required_check(cfg, repo)
-    # gh's own watcher does the waiting; we only need the final state and a bounded wall clock
     args = ["pr", "checks", str(number), "-R", repo, "--watch", "-i", "30"]
     if cfg["watch"].get("fail_fast"):
         args.append("--fail-fast")
