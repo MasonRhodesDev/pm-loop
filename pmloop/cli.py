@@ -4,42 +4,12 @@ import argparse, json, os, sys, shlex, subprocess
 from . import config, events, queue, classify, review, premerge, status, factcheck, watch, board, brief, run, ledger, llm, gh, lane
 
 def _role_model_effort(cfg: dict, role_key: str, model_flag: str | None, effort_flag: str | None) -> tuple[str, str]:
-    """Model/effort for a role line (`pm merge`'s squash body, `pm record`'s comment): an explicit CLI
-    flag always wins; otherwise prefer a live signal for what's actually driving *this* invocation over
-    the static `cfg["roles"][role_key]` default, so a role line doesn't claim the config default when a
-    different model/effort is really running the tick. This mismatch can't happen when a tick is spawned
-    by `run.py`/`lane.py` -- they pass `--model`/`--effort` from this same cfg to the `claude -p` process
-    they then run `pm merge`/`pm record` inside, so cfg and the live session agree by construction -- but
-    it can when this CLI is invoked directly from an already-running interactive session (e.g. the
-    `pm-loop:pm-loop` skill) whose actual model/effort has nothing to do with pm-loop's config.
-
-    Effort: `CLAUDE_EFFORT` is a genuine Claude Code CLI env var -- present in the `claude` binary's own
-    string table, and `claude --help` describes `--effort` as "Effort level for the current session" --
-    set by the CLI itself, not by any pm-loop or user config file (confirmed absent from this machine's
-    settings.json/settings.local.json), so it's read here as a live signal of the *current* session.
-
-    Model: no equivalent bare `CLAUDE_MODEL`-style var exists in the CLI's own env var list.
-    `CLAUDE_CODE_SUBAGENT_MODEL` looks like a candidate but is a *static* user setting (this machine's
-    ~/.claude/settings.json declares `"env": {"CLAUDE_CODE_SUBAGENT_MODEL": "sonnet"}`, and that value is
-    absent from the top-level session's own process environment -- `/proc/<pid>/environ` -- so it isn't
-    even the launching process's own state, just a fixed value Claude Code hands to *subagent* spawns)
-    naming the model a session should hand to subagents it spawns, not the model running the current
-    session itself; using it here would silently swap one static default for another while looking
-    fixed. So model falls back straight to the config default -- a caller running a tick under a
-    non-default model must still pass `--model` explicitly, or set
-    `PM_LOOP__roles__<role>__model=<model>` (config.py's existing generic env-override mechanism, see
-    `load()`) before invoking this CLI."""
     role = cfg["roles"][role_key]
     model = model_flag or role["model"]
     effort = effort_flag or os.environ.get("CLAUDE_EFFORT") or role["effort"]
     return model, effort
 
 def _git_show_base(file: str, ref: str) -> str:
-    """`file`'s content as of `ref`, for factcheck's `--base` diff (#2) -- run from the file's own
-    directory with a `./`-relative pathspec so git resolves it without needing the file's full
-    repo-root-relative path. A file that didn't exist at `ref` (renamed, newly added, or `file`/`ref`
-    just isn't in a git repo at all) makes `git show` fail -- treated as an empty base text, not a hard
-    error, so every line in the current file simply counts as "added"."""
     d = os.path.dirname(os.path.abspath(file))
     p = subprocess.run(["git", "-C", d, "show", f"{ref}:./{os.path.basename(file)}"], capture_output=True, text=True)
     return p.stdout if p.returncode == 0 else ""
@@ -70,10 +40,6 @@ def main(argv=None):
     s = sub.add_parser("llm", help="local model check / one-off prompt"); s.add_argument("text", nargs="?")
     s = sub.add_parser("git-env", help="export lines so git commits as the bot"); s.add_argument("role")
     a = ap.parse_args(argv); cfg = config.load(a.repo_dir)
-    # `pm classify <repo> <pr>` etc. accept the short repo name the board/doctrine use; resolve it
-    # once here (not per-subcommand) so lane.py/brief.py, which only get `repo` as a plain function
-    # argument from the dispatch below, see the resolved full name too. `--repo` on `events` is a
-    # list of poll targets, a different shape, so it's excluded via the isinstance(..., str) check.
     if isinstance(getattr(a, "repo", None), str) and "/" not in a.repo:
         a.repo = config.resolve_repo(cfg, a.repo)
     def out(x): print(json.dumps(x, indent=1, default=str))
@@ -121,7 +87,7 @@ def main(argv=None):
         out({"healthy": llm.healthy(cfg), "reply": llm.complete(cfg, "Answer briefly.", a.text) if a.text else None})
     elif a.cmd == "git-env":
         bot = cfg["bot"]; name = f"{bot['slug']}[bot] ({a.role})"; email = f"{bot['app_id']}+{bot['slug']}[bot]@users.noreply.github.com"
-        helper = gh.credential_helper(cfg)   # 0700 script that prints the cached token to git only; nothing secret on stdout
+        helper = gh.credential_helper(cfg)
         for k, v in {"GIT_AUTHOR_NAME": name, "GIT_AUTHOR_EMAIL": email, "GIT_COMMITTER_NAME": name, "GIT_COMMITTER_EMAIL": email,
                      "GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "credential.helper", "GIT_CONFIG_VALUE_0": helper}.items():
             print(f"export {k}={shlex.quote(v)}")

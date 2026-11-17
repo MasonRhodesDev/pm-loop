@@ -1,20 +1,16 @@
-"""Layered TOML config: plugin defaults < ~/.config/pm-loop/config.toml < <repo>/.pm-loop.toml < env.
-
-Every knob the loop uses is here so the whole workflow is tunable without touching code.
-"""
 from __future__ import annotations
 import os, tomllib, copy
 from pathlib import Path
 
 DEFAULTS: dict = {
-    "repos": [],                      # ["owner/name", ...] watched by the poller
+    "repos": [],
     "state_dir": "~/.local/state/pm-loop",
-    "bot": {                          # GitHub App used for every write (comments, PRs, merges)
+    "bot": {
         "app_id": 0, "installation_id": 0, "key_path": "~/.config/pm-loop/app.pem", "slug": "",
     },
     "poll": {"interval_s": 120, "lookback_min": 30},
     "watch": {"timeout_s": 2400, "fail_fast": True},
-    "roles": {                        # model/effort/turn caps per role; the role line carries model+effort
+    "roles": {
         "pm":         {"model": "sonnet", "effort": "medium", "max_turns": 40, "max_tool_calls": 60, "max_budget_usd": 2.0},
         "dev":        {"model": "sonnet", "effort": "high",   "max_turns": 200, "max_tool_calls": 400, "max_budget_usd": 4.0,
                        "escalate_model": "opus", "escalate_paths": []},
@@ -24,31 +20,30 @@ DEFAULTS: dict = {
     },
     "review": {
         "required_verdict": "CLEAR",
-        "classes": {                  # path globs -> class; first match wins, order matters
+        "classes": {
             "docs":  ["*.md", "docs/**", "LICENSE"],
             "ci":    [".github/**"],
             "tests": ["**/*_test.go", "**/*.test.*", "**/testdata/**", "**/test/**"],
         },
         "tier_by_class": {"docs": "none", "ci": "light", "tests": "light", "code": "light"},
-        "adversarial_paths": [],      # globs that force the adversarial tier (engine/, store/, auth/ ...)
+        "adversarial_paths": [],
         "rereview_ignore_merges": True,
-        "bot_authors": {"dependabot[bot]": "light", "renovate[bot]": "light"},   # tier for bot-authored PRs (none|light|adversarial)
+        "bot_authors": {"dependabot[bot]": "light", "renovate[bot]": "light"},
     },
     "merge": {
         "method": "squash", "required_check": "", "base": "main",
         "forbid_trailers": ["Co-Authored-By:", "Claude-Session:", "Generated with"],
-        "closing_keywords_only_in": "Closes #",   # bodies may close issues only with this exact form
-        "queue": True,                            # sequence merges through the merge queue file
-        "dry_run": False,                         # true = `pm merge` only reports what it would merge (first live runs)
-        "mergeable_poll_attempts": 5,             # mergeStateStatus UNKNOWN (always), or BLOCKED while review+checks
-                                                   # already read green (#20): re-fetch this many times before deciding
-        "mergeable_poll_delay_s": 3,              # seconds between mergeable polls (GitHub recomputes within seconds)
+        "closing_keywords_only_in": "Closes #",
+        "queue": True,
+        "dry_run": False,
+        "mergeable_poll_attempts": 5,
+        "mergeable_poll_delay_s": 3,
     },
     "status": {
         "file": "STATUS.md", "prose": True, "max_prose_words": 60,
         "forbid_patterns": ["@gmail.com", "@users.noreply.github.com"],
     },
-    "llm": {                          # local model for prose only; OpenAI-compatible chat endpoint
+    "llm": {
         "endpoint": "", "model": "", "timeout_s": 60, "max_tokens": 200, "fallback": "template",
     },
     "labels": {"needs_owner": "needs-owner", "no_review": "no-review"},
@@ -76,7 +71,7 @@ def load(repo_dir: str | os.PathLike | None = None) -> dict:
     cfg = _merge(DEFAULTS, _read(Path(os.environ.get("PM_LOOP_CONFIG", "~/.config/pm-loop/config.toml")).expanduser()))
     if repo_dir:
         cfg = _merge(cfg, _read(Path(repo_dir) / ".pm-loop.toml"))
-    for k, v in os.environ.items():           # PM_LOOP__llm__endpoint=... overrides one leaf
+    for k, v in os.environ.items():
         if k.startswith("PM_LOOP__"):
             node = cfg; parts = k[len("PM_LOOP__"):].lower().split("__")
             for part in parts[:-1]:
@@ -87,22 +82,12 @@ def load(repo_dir: str | os.PathLike | None = None) -> dict:
     return cfg
 
 def resolve_repo(cfg: dict, repo: str) -> str:
-    """A bare short name ("diarch") has no '/', so `gh` rejects it outright ("expected the
-    [HOST/]OWNER/REPO format"). Resolve it against `cfg["repos"]` (full "OWNER/REPO" strings) by
-    matching the trailing path segment after the last '/'. Exactly one match -> use the full name;
-    already-qualified, zero matches, or an ambiguous match (two configured repos share a short name)
-    -> leave it untouched, so a genuine typo still surfaces as `gh`'s own format error instead of
-    being silently resolved to the wrong repo."""
     if "/" in repo:
         return repo
     matches = [r for r in cfg.get("repos", []) if r.split("/")[-1] == repo]
     return matches[0] if len(matches) == 1 else repo
 
 def required_check(cfg: dict, repo: str) -> str:
-    """`merge.required_check`, resolved for one repo: either a single check name shared by every repo
-    (backward-compatible string, the historical shape) or a `{repo: check_name}` map, so a user-level
-    config can gate different repos on differently-named jobs without a `.pm-loop.toml` PR in each one
-    (#7). A repo missing from the map has no configured gate -- same as "" (every check-run must be green)."""
     rc = cfg["merge"].get("required_check", "")
     return rc.get(repo, "") if isinstance(rc, dict) else rc
 

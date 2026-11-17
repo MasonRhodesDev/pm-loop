@@ -1,12 +1,10 @@
 #!/usr/bin/env python3
-"""Per-agent tool-call cap. The cap comes from roles.<role>.max_tool_calls; the role is inferred from agent_type
-(dev-lane→dev, reviewer-light→review_light, reviewer-adversarial→review_adversarial, spike→spike, else pm)."""
 import sys, json
 from pathlib import Path
 from _common import read, deny, cfg, pm_role
 h = read(); c = cfg(h)
 role = pm_role(h)
-if role is None:          # not a pm-loop agent and not the headless tick: never cap the user's own session
+if role is None:
     sys.exit(0)
 key = h.get("agent_id") or h.get("session_id") or "main"
 cap = int(c["roles"].get(role, {}).get("max_tool_calls", 0) or 0)

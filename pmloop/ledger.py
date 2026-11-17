@@ -1,4 +1,3 @@
-"""Token/cost ledger: every headless run and every lane report appends one line; `pm ledger` sums it."""
 from __future__ import annotations
 import json, time, collections
 from .config import state_dir

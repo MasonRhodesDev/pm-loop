@@ -1,37 +1,14 @@
-"""Turn GitHub state changes into queue events, by polling (default) or by webhook delivery.
-
-Event kinds: pr_opened, pr_updated (new head), pr_closed, checks_done (success|failure for a head),
-review_verdict (CLEAR/BLOCKED/... comment at a tip), issue_labeled (needs-owner), main_ci (push CI on main),
-comment (owner replied). Each event is small; the PM brief is built from the table, not the payload.
-"""
 from __future__ import annotations
 import re, json, hmac, hashlib, time
 from . import gh, queue, config
 
-# Both record shapes in use: the MCP `review` tool ("## CLEAR — tip `sha`") and hand-posted comments ("**Verdict: CLEAR at sha**")
 VERDICT_RE = re.compile(r"(?:^##\s*|\*\*Verdict:\s*)(CLEAR|BLOCKED|VERIFIED|DISPUTED)\s*(?:[—-]+\s*tip\s*|at\s*)`?([0-9a-f]{7,40})`?", re.M | re.I)
-# The doctrine's non-closing reference form ("for #N", per the lane rules) plus every closing-keyword
-# spelling: anywhere in the body, not anchored to line start, so a linked issue is found however the
-# PR body phrases it. Kept here (rather than in premerge.py, which imports this module) so both
-# premerge._owner_row and board.build can share one extraction + one lookup without a circular import
-# (premerge -> events is fine; events -> premerge would not be).
 LINKED_ISSUE_RE = re.compile(r"\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?|for)\s*:?\s*#(\d+)", re.I)
 
 def linked_issues(body: str) -> list[int]:
     return sorted({int(n) for n in LINKED_ISSUE_RE.findall(body)})
 
 def linked_needs_owner(repo: str, body: str, cfg: dict) -> dict:
-    """Every issue the PR body links (via linked_issues), looked up and checked for `needs-owner`.
-    Shared by premerge._owner_row (fails the merge checklist so `pm merge` refuses) and
-    board.build (labels the PR's `next` action) so the board's displayed status never disagrees
-    with what premerge will actually decide (#30) -- one regex, one API-lookup loop, two callers
-    that each interpret the result for their own presentation.
-
-    Returns {"nums": [...], "checked": [...], "flagged": [...], "errs": [...]}: `checked`/`flagged`
-    are "#N title" strings for issues that were successfully looked up (flagged: also carry
-    needs-owner); `errs` are "#N: <exception>" strings for references the API couldn't resolve --
-    an unverifiable reference is not the same as a verified 'not owner-held' (same stance
-    premerge._owner_row already takes: fail closed, never silently pass)."""
     nums = linked_issues(body)
     needs_owner = cfg["labels"]["needs_owner"]; flagged, checked, errs = [], [], []
     for n in nums:
@@ -45,7 +22,6 @@ def linked_needs_owner(repo: str, body: str, cfg: dict) -> dict:
     return {"nums": nums, "checked": checked, "flagged": flagged, "errs": errs}
 
 def snapshot(repo: str, cfg: dict) -> dict:
-    """Current observable state of a repo: open PRs (head, checks), verdicts, needs-owner issues, last main run."""
     prs = json.loads(gh.run(["pr", "list", "-R", repo, "--state", "open", "--limit", "100",
                              "--json", "number,title,body,headRefOid,headRefName,baseRefName,isDraft,labels,updatedAt,mergeStateStatus"]))
     out = {"prs": {}, "issues": {}, "main": {}}
@@ -66,16 +42,11 @@ def snapshot(repo: str, cfg: dict) -> dict:
     return out
 
 def latest_verdict(repo: str, number: int) -> dict | None:
-    """Newest review-verdict record on the PR (from reviews, then issue comments)."""
     best = None
     try:
         for rv in gh.api_list(f"repos/{repo}/pulls/{number}/reviews?per_page=100"):
             m = VERDICT_RE.search(rv.get("body") or "")
             if m and (best is None or rv["submitted_at"] > best["at"]):
-                # The review's own commit_id (the commit it was actually submitted against) is
-                # authoritative for the tip — a hand-typed SHA in the body prose can have a typo
-                # (issue #4) even when the review is correctly attached to HEAD. Fall back to the
-                # body-parsed SHA only if commit_id is missing.
                 tip = rv.get("commit_id") or m.group(2)
                 best = {"verdict": m.group(1), "tip": tip, "at": rv["submitted_at"], "url": rv["html_url"], "by": rv["user"]["login"]}
         for c in gh.api_list(f"repos/{repo}/issues/{number}/comments?per_page=100"):
@@ -120,7 +91,7 @@ def poll(cfg: dict, repos: list[str] | None = None) -> list[dict]:
     for repo in repos or cfg["repos"]:
         new = snapshot(repo, cfg)
         old = state.get(repo)
-        if old is not None:                      # first poll only seeds the baseline
+        if old is not None:
             all_ev += diff_events(repo, old, new)
         state[repo] = new
     queue.save_state(cfg, state)
@@ -129,7 +100,6 @@ def poll(cfg: dict, repos: list[str] | None = None) -> list[dict]:
     return all_ev
 
 def from_webhook(cfg: dict, headers: dict, body: bytes, secret: str) -> list[dict]:
-    """Verify X-Hub-Signature-256 and map a delivery to events. Used by `pm events serve`."""
     sig = headers.get("x-hub-signature-256", "")
     if not hmac.compare_digest(sig, "sha256=" + hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()):
         raise PermissionError("bad signature")
@@ -151,10 +121,6 @@ def from_webhook(cfg: dict, headers: dict, body: bytes, secret: str) -> list[dic
         m = VERDICT_RE.search(body_txt)
         num = (p.get("pull_request") or p.get("issue") or {}).get("number")
         if m and num:
-            # A pull_request_review payload's review object carries commit_id (the commit it was
-            # actually submitted against) same as the REST reviews list — authoritative over a
-            # hand-typed SHA in the body. issue_comment has no such field, so its comment stays
-            # prose-parsed only.
             sha = (p.get("review") or {}).get("commit_id") or m.group(2)
             ev.append({"kind": "review_verdict", "repo": repo, "number": num, "sha": sha, "verdict": m.group(1), "url": (p.get("review") or p.get("comment"))["html_url"]})
         elif num and p.get("issue") and p["sender"]["type"] != "Bot":

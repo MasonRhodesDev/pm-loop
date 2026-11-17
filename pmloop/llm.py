@@ -1,5 +1,3 @@
-"""Local model client (OpenAI-compatible chat endpoint, e.g. llama.cpp server on the home-lab).
-Used ONLY for prose: a STATUS sentence, a PR-body summary, a CI-log triage line. Never for verdicts."""
 from __future__ import annotations
 import json, urllib.request, urllib.error
 

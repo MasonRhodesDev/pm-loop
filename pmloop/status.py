@@ -1,9 +1,3 @@
-"""STATUS.md entries from facts, not from an agent re-deriving them.
-
-The record part is generated verbatim from `gh` JSON and `git show --numstat`; the optional prose
-sentence comes from the local model (or a template when it is down). Every fact the prose may cite is
-in the record, so `pm factcheck` can verify the entry mechanically.
-"""
 from __future__ import annotations
 import json, re, subprocess, time
 from . import gh, llm, factcheck
@@ -30,10 +24,6 @@ def facts(repo: str, number: int, checkout: str | None = None) -> dict:
         if p.returncode == 0:
             f["numstat"] = p.stdout.strip().splitlines()[:60]
     if f["merge_sha"]:
-        # A merged PR's title can be edited afterwards (a rework retitled in prose only, still naming a
-        # withdrawn design — seen once). The squash commit's subject is fixed at merge time by `pm merge`
-        # and is what actually landed, so it is the more trustworthy heading. Fetched from the GitHub API
-        # (not the local checkout) so this holds even when the checkout hasn't fetched the merge yet.
         try:
             msg = gh.run(["api", f"repos/{repo}/commits/{f['merge_sha']}", "--jq", ".commit.message"])
             subject = re.sub(r"\s*\(#\d+\)\s*$", "", (msg.strip().splitlines() or [""])[0])
@@ -86,9 +76,6 @@ def entry(repo: str, number: int, cfg: dict, checkout: str | None = None) -> str
     return text
 
 def record(repo: str, number: int, cfg: dict, checkout: str | None, role: str, model: str, effort: str, dry: bool = False) -> dict:
-    """status-entry + factcheck + comment in one step: the record goes with the change (a comment on the
-    merged PR) instead of a separate STATUS-only PR. Refuses to post if the PR is not MERGED, if the
-    entry carries a forbidden pattern, or if factcheck does not report ok."""
     f = facts(repo, number, checkout)
     if f["state"] != "MERGED":
         return {"ok": False, "posted": False, "reason": f"PR state is {f['state']}, not MERGED"}

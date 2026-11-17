@@ -1,10 +1,3 @@
-"""Tests for hooks/lane-guard.py's PreToolUse deny logic (issue #5).
-
-The hook is invoked by Claude Code as a subprocess (JSON on stdin, a deny decision as JSON
-on stdout), so we exercise it the same way: craft a hook-input payload, run the script, and
-check the permissionDecision it emits. Every test also asserts a clean exit (returncode 0,
-no stderr) so a hook traceback can't masquerade as "allowed".
-"""
 from __future__ import annotations
 import json, os, subprocess, sys, tempfile, unittest
 from pathlib import Path
@@ -18,7 +11,7 @@ def run_hook(command: str, tool: str = "Bash", agent_type: str = "dev-lane", cwd
     if cwd is not None:
         payload["cwd"] = cwd
     env = {k: v for k, v in os.environ.items() if not k.startswith("PM_LOOP")}
-    env["PM_LOOP_CONFIG"] = "/nonexistent-pm-loop-config.toml"  # force defaults, isolated from any real config
+    env["PM_LOOP_CONFIG"] = "/nonexistent-pm-loop-config.toml"
     return subprocess.run(
         [sys.executable, str(HOOK)], input=json.dumps(payload), capture_output=True, text=True, env=env, timeout=10
     )
@@ -48,7 +41,6 @@ class BulkDockerTest(unittest.TestCase):
         self.assertTrue(denied(run_hook("docker system prune -f")))
 
     def test_docker_rm_f_command_substitution_denied(self):
-        # independent of the `docker ps -aq` rule: a different subshell still feeds a bulk rm -f
         self.assertTrue(denied(run_hook("docker rm -f $(cat /tmp/leftover-ids.txt)")))
 
     def test_docker_rm_f_named_container_allowed(self):
@@ -64,7 +56,6 @@ class BulkDockerTest(unittest.TestCase):
         self.assertFalse(denied(run_hook("docker stop test-5 && docker rm test-5")))
 
     def test_docker_rm_f_then_unrelated_substitution_allowed(self):
-        # the $( is not feeding the rm -f -- must not be a bulk removal
         self.assertFalse(denied(run_hook("docker rm -f test-5\nTS=$(date +%s)\necho $TS")))
 
 
@@ -83,16 +74,11 @@ class SudoSystemctlTest(unittest.TestCase):
 
 
 class GuardScopeTest(unittest.TestCase):
-    """The new checks only apply inside a pm-loop lane, same gate as the existing rules."""
-
     def test_outside_lane_agent_not_denied(self):
         self.assertFalse(denied(run_hook("docker ps -aq", agent_type="")))
 
 
 class ConfigToggleTest(unittest.TestCase):
-    """lanes.deny_bulk_docker / lanes.deny_sudo_systemctl (both default True) can be turned off
-    per repo via .pm-loop.toml, same as the existing deny_subagents/deny_background toggles."""
-
     def test_deny_bulk_docker_false_allows_docker_ps_aq(self):
         d = tempfile.mkdtemp()
         Path(d, ".pm-loop.toml").write_text("[lanes]\ndeny_bulk_docker = false\n")
@@ -106,7 +92,6 @@ class ConfigToggleTest(unittest.TestCase):
     def test_toggles_off_do_not_disable_each_other(self):
         d = tempfile.mkdtemp()
         Path(d, ".pm-loop.toml").write_text("[lanes]\ndeny_bulk_docker = false\n")
-        # only the docker toggle is off -- sudo systemctl is still denied
         self.assertTrue(denied(run_hook("sudo systemctl restart docker", cwd=d)))
 
 

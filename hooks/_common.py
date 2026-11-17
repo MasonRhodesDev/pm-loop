@@ -16,7 +16,6 @@ def in_subagent(h):
     return bool(h.get("agent_id") or h.get("agent_type"))
 
 def pm_role(h):
-    """Role this hook applies to: one of pm-loop's agents, the headless PM tick (PM_LOOP_TICK=1), else None."""
     t = (h.get("agent_type") or "").split(":")[-1]
     if t in PM_AGENTS:
         return PM_AGENTS[t]

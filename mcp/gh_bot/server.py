@@ -1,11 +1,3 @@
-"""gh-bot: post to GitHub as a GitHub App (pm-loop). Adapted from mason-agent.
-
-Every record-producing tool requires `role`, `model` and `effort`, and writes the
-role line itself as the first line of the body, so nothing can post without it.
-Tokens are minted from the app's private key and cached until near expiry.
-The token never leaves this process.
-"""
-
 from __future__ import annotations
 
 import json
@@ -23,19 +15,8 @@ from mcp.server.fastmcp import FastMCP
 import tomllib
 API = "https://api.github.com"
 
-# Config, key and state paths are resolved fresh on every call below (never cached at
-# import), so a plugin-cache rebuild that moves them under a long-running server process
-# is picked up on the very next tool call instead of requiring a session restart.
-
 
 def _read_path_text(resolve_path, describe: str) -> str:
-    """Read the text at resolve_path(), re-resolving from scratch and retrying once on
-    OSError before giving up. resolve_path is called fresh on each attempt (it re-reads
-    env vars and, for derived paths, re-parses the config file), so a file that moved or
-    was briefly absent because a plugin cache was mid-rebuild heals on the retry without
-    needing a session restart. If both attempts fail, the error names the actual path
-    that was tried, instead of a bare `[Errno 2] No such file or directory`.
-    """
     last_err: OSError | None = None
     last_path = None
     for _attempt in range(2):
@@ -46,15 +27,11 @@ def _read_path_text(resolve_path, describe: str) -> str:
         except OSError as e:
             last_err = e
     if last_path is None:
-        # resolve_path() itself failed both times (e.g. the config file that a derived
-        # path depends on) — that error already names its own path, so don't wrap it.
         raise last_err
     raise OSError(f"gh-bot: {describe} not found at {last_path} ({last_err})") from last_err
 
 
 def _cfg() -> dict:
-    """Load the pm-loop config fresh from disk (never cached), so PM_LOOP_CONFIG or the
-    file it points at can change without restarting this process."""
     def resolve() -> Path:
         return Path(os.path.expanduser(os.environ.get("PM_LOOP_CONFIG", "~/.config/pm-loop/config.toml")))
     text = _read_path_text(resolve, "pm-loop config")
@@ -78,8 +55,6 @@ def _app_slug() -> str:
 
 
 def _read_key() -> str:
-    """Read the GitHub App private key, re-resolving its path (via a fresh config read)
-    on every call and retrying once on OSError before raising."""
     return _read_path_text(_key_path, "GitHub App private key")
 
 
@@ -156,15 +131,6 @@ def _split_repo(repo: str) -> tuple[str, str]:
 
 
 def _resolve_body(body: str | None, body_file: str | None, *, required: bool) -> str | None:
-    """Resolve a tool's body text from exactly one of `body` (a literal string — MCP tool
-    arguments are NOT shell, so a caller's `$(cat ...)` or backticks meant for expansion are
-    never evaluated and would be posted verbatim) or `body_file` (a local path read
-    server-side, for long or generated bodies that should never pass through a tool
-    argument). Raises ValueError if both are given, if `required` and neither is given, or
-    if `body_file` can't be read — naming the resolved path so the caller isn't left with a
-    bare OSError. Returns None (never raises) when neither is given and `required` is False,
-    meaning "leave this field unchanged" for the edit_* tools.
-    """
     if body is not None and body_file is not None:
         raise ValueError("give exactly one of body or body_file, not both")
     if body is None and body_file is None:

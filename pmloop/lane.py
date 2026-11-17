@@ -1,6 +1,3 @@
-"""Detached headless lanes: each dev/fix/reviewer run is its own `claude -p` process with its own model, effort,
-turn cap and dollar cap. It survives the PM tick that started it; when it exits, a queue event `lane_done`
-carries its cost and last message, so the next tick sees the result without anyone waiting."""
 from __future__ import annotations
 import json, os, subprocess, sys, time, shutil, shlex
 from pathlib import Path

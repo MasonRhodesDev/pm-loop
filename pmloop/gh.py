@@ -1,4 +1,3 @@
-"""Thin `gh` wrappers. Reads use the user's gh auth; writes use the GitHub App token (never printed)."""
 from __future__ import annotations
 import json, os, subprocess, time, base64, hashlib
 from pathlib import Path
@@ -26,7 +25,6 @@ def api(path: str, *, method: str = "GET", fields: dict | None = None, token: st
     return json.loads(out) if out.strip() else None
 
 def api_list(path: str, *, token: str | None = None, key: str | None = None) -> list:
-    """GET with --paginate; concatenated pages are merged (arrays, or objects under `key`)."""
     out = run(["api", path, "--paginate", "-H", "Accept: application/vnd.github+json"], token=token)
     dec = json.JSONDecoder(); i = 0; s = out.strip(); items = []
     while i < len(s):
@@ -45,20 +43,12 @@ def check_runs(repo: str, sha: str) -> list[dict]:
     return api_list(f"repos/{repo}/commits/{sha}/check-runs?per_page=100", key="check_runs")
 
 def pr_files(repo: str, number: int) -> list[dict]:
-    """Files changed in the PR via the files API (paginated), so each entry carries a unified-diff
-    `patch` (GitHub omits it for binary/oversized files) alongside the filename."""
     return api_list(f"repos/{repo}/pulls/{number}/files?per_page=100")
 
 def _names(path: str, key: str) -> set[str]:
     return {i["name"] for i in api_list(path, key=key)}
 
 def configured_secrets_and_vars(repo: str) -> tuple[set[str], set[str], str]:
-    """Names of secrets/vars visible to this repo: repo-level (required -- a listing failure here is
-    surfaced, not swallowed, since silently treating it as empty would report every referenced secret
-    as 'missing'), plus org secrets/vars shared with this repo and every configured environment's
-    secrets/vars (both best-effort: the token may not be able to see them, and that alone isn't a
-    reason to fail the row). Listing secrets only ever returns names, never values -- that's all
-    existence-checking needs."""
     try:
         secrets = _names(f"repos/{repo}/actions/secrets?per_page=100", "secrets")
         variables = _names(f"repos/{repo}/actions/variables?per_page=100", "variables")
@@ -77,12 +67,6 @@ def configured_secrets_and_vars(repo: str) -> tuple[set[str], set[str], str]:
     return secrets, variables, ""
 
 def checks_state(repo: str, sha: str, required: str = "") -> tuple[str, list[str]]:
-    """('success'|'pending'|'failure', [bad runs]) — mirrors the merge tool's rule; `required` narrows to one
-    check name. If `required` is set but no check-run of that name exists on this SHA at all -- as opposed
-    to one that exists but hasn't finished -- that's a workflow that will never produce it (e.g. the gate
-    job is misnamed for this repo, #7), so we fall back to evaluating every check-run on the SHA instead of
-    reporting a nonexistent check as pending forever, and note the fallback in the returned detail list. If
-    there are no check-runs on the SHA at all yet, there's nothing to fall back to -- still plain pending."""
     all_runs = check_runs(repo, sha)
     runs = all_runs
     note = None
@@ -104,7 +88,6 @@ def checks_state(repo: str, sha: str, required: str = "") -> tuple[str, list[str
         bad = [note] + bad
     return state, bad
 
-# ---- GitHub App token (same scheme as gh-agent: RS256 JWT via openssl, cached until 5 min before expiry) ----
 def _b64url(b: bytes) -> str:
     return base64.urlsafe_b64encode(b).rstrip(b"=").decode()
 
@@ -137,7 +120,6 @@ def app_token(cfg: dict) -> str:
     return j["token"]
 
 def credential_helper(cfg: dict) -> str:
-    """Path of a 0700 helper that hands git the cached App token. Mints/refreshes the cache first."""
     app_token(cfg)
     cache = Path(cfg["state_dir"]) / ".token-cache.json"; helper = Path(cfg["state_dir"]) / "git-credential-pm-loop"
     body = "#!/bin/sh\n# git credential helper for pm-loop: token comes from the App-token cache, never from argv/env\n" \

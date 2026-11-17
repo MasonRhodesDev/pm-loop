@@ -1,4 +1,3 @@
-"""Is a (re-)review needed? Compare the tip the last verdict named with the current tip, ignoring merges from base."""
 from __future__ import annotations
 import subprocess
 from . import gh, events
@@ -12,7 +11,6 @@ def needed(repo: str, number: int, cfg: dict, checkout: str | None = None) -> di
         return {"needed": False, "reason": f"verdict {v['verdict']} is at tip", "tip": tip, "reviewed": v["tip"], "verdict": v["verdict"], "url": v["url"]}
     changed = None
     if checkout:
-        # non-merge commits between reviewed tip and current tip; a pure merge-from-base adds none
         args = ["git", "-C", checkout, "log", "--format=%H", f"{v['tip']}..{tip}"]
         if cfg["review"].get("rereview_ignore_merges", True):
             args.insert(3, "--no-merges")

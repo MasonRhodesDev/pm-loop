@@ -1,6 +1,3 @@
-"""Briefs for fresh agents. Each brief is small, self-contained, and carries the role config so the agent
-knows its model/effort/caps. Reviewer briefs include the prior verdict and the diff since it, so a new
-agent replaces a resumed one."""
 from __future__ import annotations
 import subprocess
 from . import gh, events, classify, review
@@ -33,7 +30,6 @@ Do not merge. Do not review yourself. Report: PR URL, tip SHA, tests run, anythi
 """
 
 def fix(repo: str, number: int, cfg: dict) -> str:
-    """A BLOCKED PR goes back to a dev lane that pushes to the PR's own branch — never a new PR."""
     role = cfg["roles"]["dev"]; v = events.latest_verdict(repo, number)
     pr = gh.pr_view(repo, number, "title,headRefName,headRefOid,url,body")
     return f"""You are a dev lane fixing {repo} PR #{number} — {pr['title']}. role: dev (#{number}) · model: {role['model']} · effort: {role['effort']} · max tool calls: {role['max_tool_calls']}.
@@ -71,7 +67,7 @@ Paste that tip verbatim from this brief — never retype it. The `review` tool r
 Files: {len(pr['files'])}. PR: {pr['url']}
 """
 
-def pm(cfg: dict, board_md: str, status_tail: str, extra: str = "", headless: bool = False) -> str:  # extra: appended after the doctrine
+def pm(cfg: dict, board_md: str, status_tail: str, extra: str = "", headless: bool = False) -> str:
     role = cfg["roles"]["pm"]
     return f"""You are the PM for one tick of the loop. role: pm · model: {role['model']} · effort: {role['effort']}. You have NO memory of previous ticks; everything you need is below. Decide, act with the `pm` scripts and MCP tools, and stop. Max tool calls: {role['max_tool_calls']}.
 
